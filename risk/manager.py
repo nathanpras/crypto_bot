@@ -148,18 +148,71 @@ def check_portfolio_guards(new_symbol: str) -> dict:
 
 
 def format_trade_for_telegram(calc: dict, signal: dict) -> str:
-    """Format a trade signal for Telegram notification."""
+    """Format trade signal untuk Telegram. Termasuk Phase 2 context section."""
+    from config import SECTOR_MAP, SIGNAL_WEIGHTS
+
     idr_rate = float(os.getenv("IDR_RATE", 17_800))
     risk_idr = calc["risk_usd"] * idr_rate
     pos_idr  = calc["position_usd"] * idr_rate
 
-    paper = "📄 PAPER TRADE" if os.getenv("PAPER_TRADING", "true").lower() == "true" else "💰 LIVE TRADE"
+    paper    = "📄 PAPER TRADE" if os.getenv("PAPER_TRADING", "true").lower() == "true" else "💰 LIVE TRADE"
     strength = "🌪 PERFECT STORM" if signal.get("strong") else "🔔 SIGNAL"
 
+    # Signal breakdown dengan progress bar
+    signals  = signal.get("signals", {})
+
+    def bar(score):
+        filled = int(score / 10)
+        return "█" * filled + "░" * (10 - filled)
+
+    weight_map = [
+        ("trend_score",     "Trend    ", SIGNAL_WEIGHTS["trend_alignment"]),
+        ("rsi_score",       "RSI      ", SIGNAL_WEIGHTS["rsi_momentum"]),
+        ("volume_score",    "Volume   ", SIGNAL_WEIGHTS["volume_confirm"]),
+        ("wyckoff_score",   "Wyckoff  ", SIGNAL_WEIGHTS["wyckoff_phase"]),
+        ("onchain_score",   "On-Chain ", SIGNAL_WEIGHTS["onchain_signal"]),
+        ("macd_score",      "MACD     ", SIGNAL_WEIGHTS["macd_momentum"]),
+        ("sentiment_score", "Sentiment", SIGNAL_WEIGHTS["sentiment_score"]),
+    ]
+
+    signal_lines = []
+    for key, label, weight in weight_map:
+        val = signals.get(key, 0)
+        signal_lines.append(
+            f"  {label} {bar(val)} {val:.0f}  ({weight*100:.0f}%)"
+        )
+
+    # Phase 2 context
+    sector_mod  = signal.get("sector_modifier", 0)
+    unlock_pen  = signal.get("unlock_penalty", 0)
+    score_adj   = (f"+{sector_mod}" if sector_mod >= 0 else str(sector_mod))
+    unlock_adj  = (f"-{unlock_pen}" if unlock_pen > 0 else "✓ none")
+
+    # Futures context (ambil dari DB jika ada)
+    symbol  = calc["symbol"]
+    db      = get_db()
+    fm_df   = db.get_futures_metrics(symbol)
+    if not fm_df.empty:
+        fm     = fm_df.iloc[0]
+        oi_chg = float(fm.get("oi_change_24h_pct") or 0)
+        fund   = float(fm.get("funding_rate") or 0)
+        oi_str = f"OI 24h  : {oi_chg:+.1f}%"
+        fr_str = f"Funding : {fund:+.4f} {'🟢' if fund < 0 else '🔴'}"
+    else:
+        oi_str = "OI 24h  : N/A"
+        fr_str = "Funding : N/A"
+
+    # TVL context
+    chain   = SECTOR_MAP.get(symbol, "")
+    tvl_row = db.get_sector_tvl(chain) if chain else {}
+    tvl_30d = float(tvl_row.get("tvl_change_30d") or 0)
+    tvl_icon = "🟢" if tvl_30d > 5 else "🔴" if tvl_30d < -5 else "⚪"
+    tvl_str  = f"Sector  : {chain} TVL {tvl_30d:+.1f}% (30d) {tvl_icon}"
+
     return f"""
-{strength} — {calc['symbol']} {paper}
-{'═'*35}
-Score   : {signal['total_score']:.0f}/100
+{strength} — {symbol} {paper}
+{'═'*42}
+Score   : {signal['total_score']:.0f}/100  ({score_adj} sector, -{unlock_pen} unlock)
 Regime  : {signal.get('regime','—')}
 Tier    : {calc['tier']}
 
@@ -172,15 +225,13 @@ R/R     : {calc['rr_ratio']:.1f}:1
 Position: ${calc['position_usd']:.2f} (Rp {pos_idr:,.0f})
 Risk    : ${calc['risk_usd']:.2f} (Rp {risk_idr:,.0f}) | {calc['risk_pct']:.2f}%
 
-Signals:
-  Trend:     {signal['signals'].get('trend_score',0):.0f}
-  RSI:       {signal['signals'].get('rsi_score',0):.0f}
-  MACD:      {signal['signals'].get('macd_score',0):.0f}
-  Volume:    {signal['signals'].get('volume_score',0):.0f}
-  Wyckoff:   {signal['signals'].get('wyckoff_score',0):.0f}
-  On-chain:  {signal['signals'].get('onchain_score',0):.0f}
-  Sentiment: {signal['signals'].get('sentiment_score',0):.0f}
+── Signal Breakdown ──────────────────────
+{chr(10).join(signal_lines)}
 
-[✅ CONFIRM] [❌ SKIP]
+── Context ───────────────────────────────
+{tvl_str}
+Unlock  : {unlock_adj}
+{oi_str}
+{fr_str}
     """.strip()
 
