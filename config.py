@@ -139,3 +139,60 @@ TELEGRAM_DAILY_REPORT_TIME = "00:05"  # UTC
 # ─── Logging ──────────────────────────────────────────────
 LOG_FILE = "logs/apex.log"
 LOG_ROTATION = "1 week"
+
+# ─── Phase 2: Sector Mapping (DeFiLlama chain slugs) ──────────
+SECTOR_MAP = {
+    "BTCUSDT":  "bitcoin",
+    "ETHUSDT":  "ethereum",
+    "SOLUSDT":  "solana",
+    "BNBUSDT":  "bsc",
+    "XRPUSDT":  "ripple",
+    "ADAUSDT":  "cardano",
+    "AVAXUSDT": "avalanche",
+    "LINKUSDT": "ethereum",   # Chainlink TVL tracked on ETH
+    "DOTUSDT":  "polkadot",
+    "TONUSDT":  "ton",
+    "ONDOUSDT": "ethereum",   # ONDO/RWA protocol on ETH
+    "ARBUSDT":  "arbitrum",
+    "OPUSDT":   "optimism",
+    "NEARUSDT": "near",
+    "INJUSDT":  "injective",
+    "SUIUSDT":  "sui",
+    "APTUSDT":  "aptos",
+    "SEIUSDT":  "sei",
+    "POLUSDT":  "polygon",
+}
+
+# ─── Phase 2: Narrative Score Modifiers ──────────────────────
+NARRATIVE_THRESHOLDS = {
+    "strong_up":   20.0,   # TVL 30d change > +20% → +5
+    "mild_up":     10.0,   # TVL 30d change > +10% → +2
+    "mild_down":  -10.0,   # TVL 30d change < -10% → -3
+    "strong_down": -20.0,  # TVL 30d change < -20% → -8
+}
+NARRATIVE_MODIFIERS = {
+    "strong_up":   5,
+    "mild_up":     2,
+    "neutral":     0,
+    "mild_down":  -3,
+    "strong_down": -8,
+}
+
+# ─── Phase 2: Token Unlock Penalties ─────────────────────────
+UNLOCK_PENALTIES = {
+    "days_7":         25,   # unlock dalam 7 hari
+    "days_14":        20,   # unlock dalam 14 hari
+    "days_30":        10,   # unlock dalam 30 hari
+    "large_supply":   10,   # tambahan jika unlock_pct_supply >= 5%
+}
+UNLOCK_LARGE_THRESHOLD = 5.0  # persen supply yang dianggap "besar"
+
+# ─── Phase 2: Binance Futures Scoring Thresholds ─────────────
+FUTURES_SCORING = {
+    "funding_very_negative":  -0.05,  # funding < ini → sangat bullish (80)
+    "funding_negative":       -0.01,  # funding < ini → bullish (70)
+    "funding_positive_high":   0.05,  # funding > ini → overleveraged, bearish (20)
+    "oi_surge_pct":           10.0,   # OI change > 10% dalam 24h = significant
+    "ls_ratio_extreme_short":  0.8,   # L/S ratio < ini = extreme short, squeeze setup
+    "ls_ratio_extreme_long":   2.0,   # L/S ratio > ini = crowded longs, risky
+}
