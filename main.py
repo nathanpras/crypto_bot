@@ -38,6 +38,9 @@ from signals.engine import scan_all_coins
 from risk.manager import calc_position_size, check_portfolio_guards, format_trade_for_telegram, get_portfolio_usd
 from utils.telegram import send_signal_alert, send_system_status, send_daily_report
 from config import COINS, SIGNAL_THRESHOLD
+from collector.onchain_enhanced import collect_all_onchain
+from collector.narrative import collect_all_tvl
+from collector.token_unlocks import collect_all_token_unlocks
 
 
 # ── Scan once ─────────────────────────────────────────────────
@@ -244,6 +247,20 @@ def main():
                         help="Show current system status")
     parser.add_argument("--macro", action="store_true",
                         help="Check macro gates (F1 + F2)")
+    parser.add_argument("--collect-onchain", action="store_true",
+                        help="Fetch Binance Futures OI/funding + optionally TVL/unlocks")
+    parser.add_argument("--full", action="store_true",
+                        help="Dipakai dengan --collect-onchain: fetch TVL + token unlocks juga")
+    parser.add_argument("--backtest", action="store_true",
+                        help="Jalankan backtest di data historis DuckDB")
+    parser.add_argument("--from", dest="date_from", default=None,
+                        help="Tanggal mulai backtest (YYYY-MM-DD)")
+    parser.add_argument("--to", dest="date_to", default=None,
+                        help="Tanggal akhir backtest (YYYY-MM-DD)")
+    parser.add_argument("--optimize-weights", action="store_true",
+                        help="Jalankan Optuna optimizer untuk signal weights")
+    parser.add_argument("--trials", type=int, default=300,
+                        help="Jumlah Optuna trials (default: 300)")
 
     args = parser.parse_args()
 
@@ -264,15 +281,35 @@ def main():
     elif args.status:
         show_status()
 
+    elif args.collect_onchain:
+        logger.info("Phase 2: Collecting on-chain data...")
+        collect_all_onchain(full=args.full)
+        if args.full:
+            logger.info("Collecting TVL data...")
+            collect_all_tvl()
+            logger.info("Collecting token unlock calendar...")
+            collect_all_token_unlocks()
+
+    elif args.backtest:
+        from backtesting.harness import run_backtest
+        run_backtest(date_from=args.date_from, date_to=args.date_to)
+
+    elif args.optimize_weights:
+        from backtesting.optimizer import run_optimization
+        run_optimization(n_trials=args.trials)
+
     elif args.run:
         asyncio.run(live_loop())
 
     else:
         parser.print_help()
         print("\nQuick start:")
-        print("  python3 main.py --fetch-history   ← Run this first")
-        print("  python3 main.py --scan-once        ← Test one scan")
-        print("  python3 main.py --run              ← Start live mode")
+        print("  python3 main.py --fetch-history          ← Download 2 tahun data")
+        print("  python3 main.py --collect-onchain --full ← Fetch on-chain + TVL + unlocks")
+        print("  python3 main.py --scan-once              ← Test satu scan")
+        print("  python3 main.py --backtest               ← Validasi strategi")
+        print("  python3 main.py --optimize-weights       ← Cari bobot optimal")
+        print("  python3 main.py --run                    ← Start live mode")
 
 
 if __name__ == "__main__":
