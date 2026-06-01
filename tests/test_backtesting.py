@@ -125,3 +125,47 @@ def test_calc_metrics_empty_trades():
     assert metrics["win_rate"] == 0.0
     assert metrics["total_trades"] == 0
     assert metrics["sharpe"] == 0.0
+
+
+def test_should_deploy_good_metrics():
+    """Val Sharpe > 0.8 + Win rate > 55% = deploy."""
+    from backtesting.walk_forward import should_deploy
+    ok, reason = should_deploy(
+        {"sharpe": 2.0},
+        {"sharpe": 1.2, "win_rate": 0.62}
+    )
+    assert ok is True
+    assert "1.20" in reason
+
+
+def test_should_deploy_low_sharpe():
+    """Val Sharpe < 0.8 = do not deploy."""
+    from backtesting.walk_forward import should_deploy
+    ok, reason = should_deploy(
+        {"sharpe": 2.0},
+        {"sharpe": 0.5, "win_rate": 0.65}
+    )
+    assert ok is False
+    assert "0.50" in reason
+
+
+def test_should_deploy_low_win_rate():
+    """Win rate < 55% = do not deploy."""
+    from backtesting.walk_forward import should_deploy
+    ok, reason = should_deploy(
+        {"sharpe": 2.0},
+        {"sharpe": 1.0, "win_rate": 0.45}
+    )
+    assert ok is False
+    assert "45.0%" in reason
+
+
+def test_should_deploy_overfitting_detected():
+    """Val Sharpe < 40% of train Sharpe = overfitting."""
+    from backtesting.walk_forward import should_deploy
+    ok, reason = should_deploy(
+        {"sharpe": 3.0},
+        {"sharpe": 0.9, "win_rate": 0.65}
+    )
+    assert ok is False
+    assert "overfitting" in reason.lower()

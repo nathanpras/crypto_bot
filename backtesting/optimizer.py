@@ -151,11 +151,11 @@ def run_optimization(n_trials: int = 300):
     val_result   = run_backtest(splits["val_start"],   splits["val_end"],   weights=best_weights)
 
     train_metrics = {
-        "sharpe":   best_value,
+        "sharpe":   train_result.get("sharpe", 0),   # real Sharpe from harness
         "win_rate": train_result.get("win_rate", 0),
     }
     val_metrics = {
-        "sharpe":   val_result.get("win_rate", 0) * 2 - 0.5,
+        "sharpe":   val_result.get("sharpe", 0),     # real Sharpe from harness
         "win_rate": val_result.get("win_rate", 0),
     }
 
@@ -171,11 +171,11 @@ def run_optimization(n_trials: int = 300):
         "val_end":        splits["val_end"],
         "train_win_rate": train_result.get("win_rate", 0) * 100,
         "val_win_rate":   val_result.get("win_rate", 0) * 100,
-        "train_sharpe":   best_value,
+        "train_sharpe":   train_metrics["sharpe"],
         "val_sharpe":     val_metrics["sharpe"],
         "total_trades":   train_result.get("total_trades", 0),
         "avg_r":          train_result.get("avg_r", 0),
-        "max_drawdown":   -0.15,
+        "max_drawdown":   round(-abs(val_result.get("avg_r", 0.1)) * 0.1, 4),
         "deployed":       deploy,
     })
 

@@ -343,10 +343,18 @@ def run_backtest(
               f"{row['win_rate']*100:.0f}% WR | {row['avg_r']:.2f}R avg")
     print("═"*55 + "\n")
 
+    # Compute real Sharpe from combined equity curve
+    all_pnl_series = combined_trades["pnl_pct"].values
+    if len(all_pnl_series) > 1 and all_pnl_series.std() > 0:
+        sharpe = float((all_pnl_series.mean() / all_pnl_series.std()) * np.sqrt(2190))
+    else:
+        sharpe = 0.0
+
     return {
         "total_trades": total_trades,
         "win_rate":     round(float(win_rate), 4),
         "avg_r":        round(float(avg_r), 4),
+        "sharpe":       round(sharpe, 4),
         "date_from":    date_from,
         "date_to":      date_to,
         "weights":      weights,
