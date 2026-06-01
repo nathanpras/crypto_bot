@@ -1,0 +1,316 @@
+# collector/onchain_enhanced.py
+"""
+Enhanced on-chain data collection for all 19 coins.
+BTC/ETH: CoinMetrics community API (MVRV, exchange netflow)
+All coins: Binance Futures API (OI, funding rate, long/short ratio, liquidations)
+"""
+import requests
+import time
+from datetime import date
+from loguru import logger
+
+from config import COINS, FUTURES_SCORING
+from database import get_db
+
+
+BINANCE_FUTURES_BASE = "https://fapi.binance.com"
+COINMETRICS_BASE = "https://community-api.coinmetrics.io/v4"
+
+
+# ── Binance Futures Data ──────────────────────────────────────
+
+def fetch_open_interest(symbol: str) -> dict:
+    """Fetch current OI + 24h history dari Binance Futures."""
+    try:
+        r = requests.get(
+            f"{BINANCE_FUTURES_BASE}/fapi/v1/openInterest",
+            params={"symbol": symbol}, timeout=10
+        )
+        r.raise_for_status()
+        current_oi = float(r.json()["openInterest"])
+
+        r2 = requests.get(
+            f"{BINANCE_FUTURES_BASE}/futures/data/openInterestHist",
+            params={"symbol": symbol, "period": "1h", "limit": 25},
+            timeout=10
+        )
+        r2.raise_for_status()
+        hist = r2.json()
+        if len(hist) >= 24:
+            oi_24h_ago = float(hist[-24]["sumOpenInterest"])
+            oi_change_pct = (current_oi - oi_24h_ago) / oi_24h_ago * 100
+        else:
+            oi_change_pct = 0.0
+
+        return {"open_interest": current_oi, "oi_change_24h_pct": oi_change_pct}
+
+    except Exception as e:
+        logger.debug(f"OI fetch failed for {symbol}: {e}")
+        return {"open_interest": None, "oi_change_24h_pct": 0.0}
+
+
+def fetch_funding_rate(symbol: str) -> float:
+    """Fetch current funding rate dari Binance Futures."""
+    try:
+        r = requests.get(
+            f"{BINANCE_FUTURES_BASE}/fapi/v1/premiumIndex",
+            params={"symbol": symbol}, timeout=10
+        )
+        r.raise_for_status()
+        return float(r.json()["lastFundingRate"])
+    except Exception as e:
+        logger.debug(f"Funding rate fetch failed for {symbol}: {e}")
+        return 0.0
+
+
+def fetch_long_short_ratio(symbol: str) -> float:
+    """Fetch long/short account ratio dari Binance Futures."""
+    try:
+        r = requests.get(
+            f"{BINANCE_FUTURES_BASE}/futures/data/globalLongShortAccountRatio",
+            params={"symbol": symbol, "period": "1h", "limit": 1},
+            timeout=10
+        )
+        r.raise_for_status()
+        data = r.json()
+        if data:
+            return float(data[0]["longShortRatio"])
+        return 1.0
+    except Exception as e:
+        logger.debug(f"L/S ratio fetch failed for {symbol}: {e}")
+        return 1.0
+
+
+def fetch_liquidations(symbol: str) -> dict:
+    """Fetch liquidation orders dari Binance Futures (last 50 orders)."""
+    try:
+        r = requests.get(
+            f"{BINANCE_FUTURES_BASE}/fapi/v1/forceOrders",
+            params={"symbol": symbol, "autoCloseType": "LIQUIDATION", "limit": 50},
+            timeout=10
+        )
+        r.raise_for_status()
+        orders = r.json()
+
+        liq_long  = sum(float(o["origQty"]) * float(o["price"])
+                        for o in orders if o.get("side") == "SELL")
+        liq_short = sum(float(o["origQty"]) * float(o["price"])
+                        for o in orders if o.get("side") == "BUY")
+
+        return {"liq_long_24h": liq_long, "liq_short_24h": liq_short}
+
+    except Exception as e:
+        logger.debug(f"Liquidation fetch failed for {symbol}: {e}")
+        return {"liq_long_24h": 0.0, "liq_short_24h": 0.0}
+
+
+def fetch_all_futures_data(symbol: str) -> dict:
+    """Fetch semua Binance Futures data untuk satu coin."""
+    oi_data   = fetch_open_interest(symbol)
+    funding   = fetch_funding_rate(symbol)
+    ls_ratio  = fetch_long_short_ratio(symbol)
+    liq_data  = fetch_liquidations(symbol)
+
+    return {
+        **oi_data,
+        "funding_rate":     funding,
+        "long_short_ratio": ls_ratio,
+        **liq_data,
+    }
+
+
+# ── CoinMetrics Data (BTC + ETH) ──────────────────────────────
+
+def fetch_coinmetrics(asset: str) -> dict:
+    """
+    Fetch MVRV ratio + exchange netflow dari CoinMetrics community API.
+    Asset: 'btc' atau 'eth'. Rate limit: 10 req/menit — includes sleep.
+    """
+    try:
+        r = requests.get(
+            f"{COINMETRICS_BASE}/timeseries/asset-metrics",
+            params={
+                "assets":    asset,
+                "metrics":   "CapMVRVCur,FlowNetInvNtv",
+                "frequency": "1d",
+                "limit":     7,
+                "pretty":    "true",
+            },
+            timeout=15
+        )
+        r.raise_for_status()
+        data = r.json().get("data", [])
+
+        if not data:
+            return {}
+
+        latest = data[-1]
+        mvrv    = float(latest.get("CapMVRVCur", 0) or 0)
+        netflow = float(latest.get("FlowNetInvNtv", 0) or 0)
+
+        logger.debug(f"CoinMetrics {asset}: MVRV={mvrv:.2f}, netflow={netflow:.0f}")
+        return {"mvrv_ratio": mvrv, "exch_netflow": netflow}
+
+    except Exception as e:
+        logger.warning(f"CoinMetrics fetch failed for {asset}: {e}")
+        return {}
+
+
+# ── Scoring Functions ─────────────────────────────────────────
+
+def score_from_futures_data(data: dict) -> float:
+    """
+    Hitung on-chain score 0-100 dari Binance Futures data.
+    Dipanggil untuk 17 altcoin non-BTC/ETH.
+    """
+    cfg = FUTURES_SCORING
+    score = 50.0
+
+    funding = data.get("funding_rate", 0.0) or 0.0
+    oi_chg  = data.get("oi_change_24h_pct", 0.0) or 0.0
+    ls      = data.get("long_short_ratio", 1.0) or 1.0
+    liq_l   = data.get("liq_long_24h", 0.0) or 0.0
+    liq_s   = data.get("liq_short_24h", 0.0) or 0.0
+
+    # Funding rate signal (most predictive)
+    if funding < cfg["funding_very_negative"]:
+        score = 80   # Shorts paying heavily = strong bullish setup
+    elif funding < cfg["funding_negative"]:
+        score = 68
+    elif funding > cfg["funding_positive_high"]:
+        score = 20   # Longs overleveraged = dangerous
+    else:
+        score = 50
+
+    # OI momentum adjustment
+    if oi_chg > cfg["oi_surge_pct"]:
+        if funding < 0:
+            score = min(score + 10, 90)   # OI up + funding negative = bullish surge
+        else:
+            score = max(score - 5, 15)    # OI up + positive funding = crowded
+
+    # Long/Short ratio extremes (contrarian)
+    if ls < cfg["ls_ratio_extreme_short"]:
+        score = min(score + 8, 90)    # Extreme shorts = squeeze potential
+    elif ls > cfg["ls_ratio_extreme_long"]:
+        score = max(score - 8, 15)    # Extreme longs = crowded, risky
+
+    # Long liquidation cascade = capitulation = potential bottom
+    if liq_l > 0 and liq_s > 0:
+        total_liq = liq_l + liq_s
+        if liq_l / total_liq > 0.80 and total_liq > 5_000_000:
+            score = max(score, 75)    # Heavy long liquidation = bottom signal
+
+    return float(max(0.0, min(100.0, score)))
+
+
+def score_from_coinmetrics_data(data: dict) -> float:
+    """
+    Hitung on-chain score 0-100 dari CoinMetrics data.
+    Dipanggil untuk BTC dan ETH saja.
+    """
+    if not data:
+        return 50.0
+
+    netflow = data.get("exch_netflow", 0) or 0
+    mvrv    = data.get("mvrv_ratio", 1.5) or 1.5
+
+    # Exchange netflow score (negative = outflow = bullish)
+    if netflow < -5000:      score = 82
+    elif netflow < -1000:    score = 70
+    elif netflow < 0:        score = 60
+    elif netflow < 1000:     score = 45
+    else:                    score = 28
+
+    # MVRV adjustment
+    if mvrv < 1.0:     score = min(score + 15, 92)   # Undervalued
+    elif mvrv < 1.5:   score = min(score + 5,  90)
+    elif mvrv > 3.5:   score = max(score - 25, 10)   # Very overvalued
+    elif mvrv > 2.5:   score = max(score - 12, 15)
+
+    return max(0.0, min(100.0, float(score)))
+
+
+def calc_onchain_score_enhanced(symbol: str, db=None) -> float:
+    """
+    Hitung enhanced on-chain score untuk satu coin.
+    BTC/ETH: baca tabel onchain (CoinMetrics data).
+    Lainnya: baca tabel futures_metrics (Binance Futures data).
+    Return 50.0 jika tidak ada data (graceful fallback).
+    """
+    if db is None:
+        db = get_db()
+
+    is_btc = "BTC" in symbol
+    is_eth = "ETH" in symbol and "BTC" not in symbol
+
+    if is_btc or is_eth:
+        asset = "btc" if is_btc else "eth"
+        try:
+            result = db.conn.execute("""
+                SELECT exch_netflow, mvrv_ratio FROM onchain
+                WHERE asset = ? ORDER BY date DESC LIMIT 7
+            """, [asset]).df()
+            if result.empty:
+                return 50.0
+            data = {
+                "exch_netflow": result["exch_netflow"].mean(),
+                "mvrv_ratio":   result["mvrv_ratio"].iloc[0],
+            }
+            return score_from_coinmetrics_data(data)
+        except Exception:
+            return 50.0
+    else:
+        # Altcoin: baca dari futures_metrics
+        metrics_df = db.get_futures_metrics(symbol)
+        if metrics_df.empty:
+            return 50.0
+        row = metrics_df.iloc[0]
+        data = {
+            "oi_change_24h_pct": row.get("oi_change_24h_pct", 0),
+            "funding_rate":      row.get("funding_rate", 0),
+            "long_short_ratio":  row.get("long_short_ratio", 1),
+            "liq_long_24h":      row.get("liq_long_24h", 0),
+            "liq_short_24h":     row.get("liq_short_24h", 0),
+        }
+        return score_from_futures_data(data)
+
+
+# ── Collection Runner ─────────────────────────────────────────
+
+def collect_all_onchain(full: bool = False):
+    """
+    Fetch dan simpan data on-chain untuk semua coin.
+    full=False: hanya Binance Futures (cepat, ~30 detik)
+    full=True:  Futures + CoinMetrics (semua, ~2 menit)
+    """
+    db = get_db()
+
+    logger.info(f"Collecting on-chain data (full={full})...")
+
+    for symbol in COINS:
+        try:
+            data = fetch_all_futures_data(symbol)
+            db.upsert_futures_metrics(symbol, data)
+            logger.debug(f"  {symbol}: funding={data.get('funding_rate', 0):.4f}, "
+                         f"OI_chg={data.get('oi_change_24h_pct', 0):.1f}%")
+            time.sleep(0.2)
+        except Exception as e:
+            logger.warning(f"  Failed to collect futures for {symbol}: {e}")
+
+    if full:
+        for asset in ["btc", "eth"]:
+            try:
+                data = fetch_coinmetrics(asset)
+                if data:
+                    db.conn.execute("""
+                        INSERT OR REPLACE INTO onchain
+                        (asset, date, exch_netflow, mvrv_ratio)
+                        VALUES (?, CURRENT_DATE, ?, ?)
+                    """, [asset, data.get("exch_netflow"), data.get("mvrv_ratio")])
+                    logger.info(f"  CoinMetrics {asset}: MVRV={data.get('mvrv_ratio', '?'):.2f}")
+                time.sleep(7)
+            except Exception as e:
+                logger.warning(f"  CoinMetrics failed for {asset}: {e}")
+
+    logger.info("On-chain collection complete.")
