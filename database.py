@@ -141,6 +141,56 @@ CREATE TABLE IF NOT EXISTS portfolio (
 );
 """
 
+SCHEMA_PHASE2 = """
+CREATE TABLE IF NOT EXISTS futures_metrics (
+    symbol              VARCHAR NOT NULL,
+    timestamp           TIMESTAMP NOT NULL,
+    open_interest       DOUBLE,
+    oi_change_24h_pct   DOUBLE,
+    funding_rate        DOUBLE,
+    long_short_ratio    DOUBLE,
+    liq_long_24h        DOUBLE,
+    liq_short_24h       DOUBLE,
+    PRIMARY KEY (symbol, timestamp)
+);
+
+CREATE TABLE IF NOT EXISTS sector_tvl (
+    sector          VARCHAR NOT NULL,
+    date            DATE NOT NULL,
+    tvl_usd         DOUBLE,
+    tvl_change_7d   DOUBLE,
+    tvl_change_30d  DOUBLE,
+    PRIMARY KEY (sector, date)
+);
+
+CREATE TABLE IF NOT EXISTS token_unlocks (
+    symbol              VARCHAR NOT NULL,
+    unlock_date         DATE NOT NULL,
+    unlock_amount_usd   DOUBLE,
+    unlock_pct_supply   DOUBLE,
+    category            VARCHAR,
+    PRIMARY KEY (symbol, unlock_date)
+);
+
+CREATE TABLE IF NOT EXISTS backtest_results (
+    run_id          VARCHAR PRIMARY KEY,
+    run_date        TIMESTAMP,
+    weights_json    VARCHAR,
+    train_start     DATE,
+    train_end       DATE,
+    val_start       DATE,
+    val_end         DATE,
+    train_win_rate  DOUBLE,
+    val_win_rate    DOUBLE,
+    train_sharpe    DOUBLE,
+    val_sharpe      DOUBLE,
+    total_trades    INTEGER,
+    avg_r           DOUBLE,
+    max_drawdown    DOUBLE,
+    deployed        BOOLEAN DEFAULT FALSE
+);
+"""
+
 
 class Database:
     def __init__(self, path: str = DB_PATH):
@@ -152,6 +202,7 @@ class Database:
 
     def _init_schema(self):
         self.conn.execute(SCHEMA)
+        self.conn.execute(SCHEMA_PHASE2)
 
     # ── Candles ──────────────────────────────────────────────
 
@@ -341,6 +392,97 @@ class Database:
     def get_latest_macro(self) -> dict:
         result = self.conn.execute("""
             SELECT * FROM macro ORDER BY date DESC LIMIT 1
+        """).df()
+        if result.empty:
+            return {}
+        return result.iloc[0].to_dict()
+
+    # ── Futures Metrics ──────────────────────────────────────
+    def upsert_futures_metrics(self, symbol: str, data: dict):
+        self.conn.execute("""
+            INSERT OR REPLACE INTO futures_metrics VALUES (?, now(), ?, ?, ?, ?, ?, ?)
+        """, [
+            symbol,
+            data.get("open_interest"),
+            data.get("oi_change_24h_pct"),
+            data.get("funding_rate"),
+            data.get("long_short_ratio"),
+            data.get("liq_long_24h"),
+            data.get("liq_short_24h"),
+        ])
+
+    def get_futures_metrics(self, symbol: str, limit: int = 1) -> pd.DataFrame:
+        return self.conn.execute("""
+            SELECT * FROM futures_metrics
+            WHERE symbol = ?
+            ORDER BY timestamp DESC
+            LIMIT ?
+        """, [symbol, limit]).df()
+
+    # ── Sector TVL ───────────────────────────────────────────
+    def upsert_sector_tvl(self, sector: str, data: dict):
+        self.conn.execute("""
+            INSERT OR REPLACE INTO sector_tvl VALUES (?, CURRENT_DATE, ?, ?, ?)
+        """, [
+            sector,
+            data.get("tvl_usd"),
+            data.get("tvl_change_7d"),
+            data.get("tvl_change_30d"),
+        ])
+
+    def get_sector_tvl(self, sector: str) -> dict:
+        result = self.conn.execute("""
+            SELECT * FROM sector_tvl
+            WHERE sector = ?
+            ORDER BY date DESC LIMIT 1
+        """, [sector]).df()
+        if result.empty:
+            return {}
+        return result.iloc[0].to_dict()
+
+    # ── Token Unlocks ────────────────────────────────────────
+    def upsert_token_unlock(self, symbol: str, data: dict):
+        self.conn.execute("""
+            INSERT OR REPLACE INTO token_unlocks VALUES (?, ?, ?, ?, ?)
+        """, [
+            symbol,
+            data["unlock_date"],
+            data.get("unlock_amount_usd"),
+            data.get("unlock_pct_supply"),
+            data.get("category"),
+        ])
+
+    def get_upcoming_unlocks(self, symbol: str, days: int = 30) -> list:
+        result = self.conn.execute(f"""
+            SELECT * FROM token_unlocks
+            WHERE symbol = ?
+              AND unlock_date BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL {int(days)} DAY
+            ORDER BY unlock_date
+        """, [symbol]).df()
+        return result.to_dict("records")
+
+    # ── Backtest Results ─────────────────────────────────────
+    def save_backtest_result(self, data: dict):
+        self.conn.execute("""
+            INSERT OR REPLACE INTO backtest_results VALUES (
+                ?, now(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+            )
+        """, [
+            data["run_id"], data["weights_json"],
+            data["train_start"], data["train_end"],
+            data["val_start"], data["val_end"],
+            data.get("train_win_rate"), data.get("val_win_rate"),
+            data.get("train_sharpe"), data.get("val_sharpe"),
+            data.get("total_trades"), data.get("avg_r"),
+            data.get("max_drawdown"), data.get("deployed", False),
+        ])
+
+    def get_best_backtest(self) -> dict:
+        result = self.conn.execute("""
+            SELECT * FROM backtest_results
+            WHERE deployed = TRUE OR val_sharpe IS NOT NULL
+            ORDER BY val_sharpe DESC NULLS LAST
+            LIMIT 1
         """).df()
         if result.empty:
             return {}
