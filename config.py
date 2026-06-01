@@ -106,7 +106,7 @@ FILTERS = {
 }
 
 # ─── Exchange Settings ────────────────────────────────────
-EXCHANGE = "binance"
+EXCHANGE = "bybit"
 EXCHANGE_FEE = 0.001     # 0.1% per side (0.075% with BNB)
 ORDER_TYPE = "limit"     # Never market orders (except emergency)
 TP1_PORTION  = 0.50      # Take 50% profit at TP1

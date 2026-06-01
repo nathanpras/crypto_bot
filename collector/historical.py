@@ -13,7 +13,7 @@ from database import get_db
 
 
 def get_exchange():
-    exchange = ccxt.binance({
+    exchange = ccxt.bybit({
         "enableRateLimit": True,
         "options": {"defaultType": "spot"},
     })

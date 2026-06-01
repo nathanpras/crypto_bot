@@ -1,8 +1,8 @@
 # ============================================================
-# collector/realtime.py — Binance WebSocket Real-Time Stream
+# collector/realtime.py — Bybit WebSocket Real-Time Stream
 # ============================================================
-# Streams: 4H kline data for all 19 coins simultaneously
-# One connection handles all coins (Binance combined streams)
+# Streams: 4H + 1D kline data for all 19 coins simultaneously
+# Bybit WebSocket v5 public spot endpoint
 # Auto-reconnects on disconnect
 # Triggers signal engine on every confirmed candle close
 # ============================================================
@@ -18,8 +18,10 @@ from config import COINS, TIMEFRAMES
 from database import get_db
 
 
-# Binance combined stream URL
-WS_BASE = "wss://stream.binance.com:9443/stream?streams="
+WS_URL = "wss://stream.bybit.com/v5/public/spot"
+
+# Bybit interval → standard timeframe mapping
+BYBIT_TF_MAP = {"240": "4h", "D": "1d"}
 
 # Callbacks registered by other modules
 _on_candle_close_callbacks = []
@@ -30,46 +32,54 @@ def on_candle_close(func):
     return func
 
 
-def build_stream_url() -> str:
-    """Build Binance combined stream URL for all coins × timeframes."""
-    streams = []
+def build_subscribe_args() -> list:
+    """Build Bybit subscription topics for all coins × timeframes."""
+    args = []
     for symbol in COINS.keys():
-        sym_lower = symbol.lower()
-        # Primary: 4H candles (signal engine)
-        streams.append(f"{sym_lower}@kline_4h")
-        # Daily for structure
-        streams.append(f"{sym_lower}@kline_1d")
-
-    url = WS_BASE + "/".join(streams)
-    logger.debug(f"WebSocket streams: {len(streams)} total")
-    return url
+        args.append(f"kline.240.{symbol}")   # 4H
+        args.append(f"kline.D.{symbol}")     # 1D
+    return args
 
 
-def parse_kline_message(msg: dict) -> dict | None:
+def parse_bybit_message(msg: dict) -> dict | None:
     """
-    Parse a Binance kline WebSocket message.
-    Returns candle dict if candle is CLOSED, else None.
+    Parse a Bybit v5 kline WebSocket message.
+    Returns candle dict only when candle is CONFIRMED (closed), else None.
     """
     try:
-        data  = msg.get("data", msg)
-        kline = data.get("k", {})
+        topic = msg.get("topic", "")
+        if not topic.startswith("kline."):
+            return None
 
-        if not kline.get("x", False):  # x = is candle closed?
-            return None                # Ignore open (in-progress) candles
+        data = msg.get("data", [])
+        if not data:
+            return None
+
+        kline = data[0]
+
+        # Only process confirmed (closed) candles
+        if not kline.get("confirm", False):
+            return None
+
+        # Parse topic: "kline.240.BTCUSDT" or "kline.D.BTCUSDT"
+        parts     = topic.split(".")
+        interval  = parts[1]
+        symbol    = parts[2]
+        timeframe = BYBIT_TF_MAP.get(interval, interval)
 
         return {
-            "symbol":    kline["s"],           # e.g. "BTCUSDT"
-            "timeframe": kline["i"],           # e.g. "4h"
-            "timestamp": pd.Timestamp(kline["t"], unit="ms"),
-            "open":      float(kline["o"]),
-            "high":      float(kline["h"]),
-            "low":       float(kline["l"]),
-            "close":     float(kline["c"]),
-            "volume":    float(kline["v"]),
+            "symbol":    symbol,
+            "timeframe": timeframe,
+            "timestamp": pd.Timestamp(int(kline["start"]), unit="ms"),
+            "open":      float(kline["open"]),
+            "high":      float(kline["high"]),
+            "low":       float(kline["low"]),
+            "close":     float(kline["close"]),
+            "volume":    float(kline["volume"]),
             "closed":    True,
         }
     except (KeyError, TypeError, ValueError) as e:
-        logger.warning(f"Failed to parse kline message: {e}")
+        logger.warning(f"Failed to parse Bybit message: {e}")
         return None
 
 
@@ -80,9 +90,13 @@ async def handle_message(raw: str, db):
     except json.JSONDecodeError:
         return
 
-    candle = parse_kline_message(msg)
+    # Respond to server ping
+    if msg.get("op") == "ping":
+        return  # websockets library handles pong automatically
+
+    candle = parse_bybit_message(msg)
     if candle is None:
-        return  # In-progress candle, skip
+        return  # In-progress candle or non-kline message
 
     # Store in database
     df = pd.DataFrame([candle])
@@ -106,28 +120,33 @@ async def handle_message(raw: str, db):
 
 
 async def connect_and_stream():
-    """Main WebSocket loop with auto-reconnect."""
-    db  = get_db()
-    url = build_stream_url()
+    """Main Bybit WebSocket loop with auto-reconnect."""
+    db   = get_db()
+    args = build_subscribe_args()
 
-    reconnect_delay = 5   # seconds
+    reconnect_delay = 5
     max_delay       = 60
 
     while True:
         try:
-            logger.info(f"Connecting to Binance WebSocket...")
-            logger.info(f"Monitoring {len(COINS)} coins × 2 timeframes = "
-                        f"{len(COINS)*2} streams")
+            logger.info("Connecting to Bybit WebSocket...")
+            logger.info(f"Monitoring {len(COINS)} coins × 2 timeframes = {len(args)} streams")
 
             async with websockets.connect(
-                url,
+                WS_URL,
                 ping_interval=20,
                 ping_timeout=10,
                 close_timeout=5,
-                max_size=2**20  # 1MB max message size
+                max_size=2**20,
             ) as ws:
-                reconnect_delay = 5  # Reset on successful connect
-                logger.info("✓ WebSocket connected — live data flowing")
+                reconnect_delay = 5
+
+                # Subscribe in batches of 10 (Bybit limit per message)
+                for i in range(0, len(args), 10):
+                    batch = args[i:i+10]
+                    await ws.send(json.dumps({"op": "subscribe", "args": batch}))
+
+                logger.info("✓ Bybit WebSocket connected — live data flowing")
                 logger.info("  Waiting for 4H candle closes to fire signal engine...")
 
                 async for raw in ws:
