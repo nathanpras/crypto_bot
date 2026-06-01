@@ -10,13 +10,13 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 @pytest.fixture
 def in_memory_db():
     """DuckDB in-memory database untuk testing — tidak menyentuh data production."""
-    import duckdb
     conn = duckdb.connect(":memory:")
-    return conn
+    yield conn
+    conn.close()
 
 @pytest.fixture
 def sample_candles_df():
-    """100 candle OHLCV palsu untuk testing sinyal."""
+    """220 candle OHLCV palsu untuk testing sinyal (butuh 200+ untuk EMA-200)."""
     import numpy as np
     n = 220
     np.random.seed(42)
