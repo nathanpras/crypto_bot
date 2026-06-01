@@ -13,6 +13,9 @@ from loguru import logger
 
 from config import COINS, SIGNAL_WEIGHTS, SIGNAL_THRESHOLD, SIGNAL_STRONG, FILTERS
 from database import get_db
+from collector.onchain_enhanced import calc_onchain_score_enhanced
+from collector.narrative import get_sector_modifier
+from collector.token_unlocks import get_unlock_penalty
 
 
 def score_clamp(val: float) -> float:
@@ -251,44 +254,10 @@ def calc_wyckoff_score(df_4h: pd.DataFrame) -> float:
 
 def calc_onchain_score(symbol: str, db) -> float:
     """
-    Fetch latest on-chain data from database.
-    Exchange netflow: outflow = bullish, inflow = bearish.
+    On-chain score: BTC/ETH pakai CoinMetrics, altcoin pakai Binance Futures.
+    Delegate ke calc_onchain_score_enhanced dari collector/onchain_enhanced.py.
     """
-    asset = "btc" if "BTC" in symbol else "eth" if "ETH" in symbol else None
-    if asset is None:
-        return 50.0  # No on-chain data for alts (use neutral)
-
-    try:
-        result = db.conn.execute("""
-            SELECT exch_netflow, mvrv_ratio
-            FROM onchain
-            WHERE asset = ?
-            ORDER BY date DESC
-            LIMIT 7
-        """, [asset]).df()
-
-        if result.empty:
-            return 50.0
-
-        # Net flow score: negative netflow (outflow) = bullish
-        netflow_avg = result["exch_netflow"].mean()
-        score = 50.0
-
-        if netflow_avg < -1000:   score = 80   # Strong outflow
-        elif netflow_avg < 0:     score = 65   # Mild outflow
-        elif netflow_avg < 1000:  score = 40   # Mild inflow
-        else:                     score = 20   # Strong inflow (bearish)
-
-        # MVRV adjustment
-        mvrv = result["mvrv_ratio"].iloc[0]
-        if pd.notna(mvrv):
-            if mvrv < 1.0:   score = min(score + 15, 90)  # Undervalued
-            elif mvrv > 3.0: score = max(score - 20, 10)  # Overvalued
-
-        return score_clamp(score)
-
-    except Exception:
-        return 50.0
+    return calc_onchain_score_enhanced(symbol, db)
 
 
 # ── Signal 7: Sentiment Score ─────────────────────────────────
@@ -388,27 +357,34 @@ def score_coin(symbol: str, fear_greed: int = 50,
     s["onchain_score"]   = calc_onchain_score(symbol, db)
     s["sentiment_score"] = calc_sentiment_score(fear_greed, funding_rate)
 
-    # Weighted total
+    # Weighted total (Phase 1)
     total = sum(
         s[f"{key}_score"] * weight
         for key, weight in SIGNAL_WEIGHTS.items()
         if f"{key}_score" in s
     )
 
+    # Phase 2 modifiers
+    sector_mod  = get_sector_modifier(symbol, db)
+    unlock_pen  = get_unlock_penalty(symbol, db)
+    total       = score_clamp(total + sector_mod - unlock_pen)
+
     regime = detect_regime(df_4h)
-    fired  = total >= SIGNAL_THRESHOLD
-    strong = total >= SIGNAL_STRONG
+    fired  = total >= SIGNAL_THRESHOLD   # Use final total
+    strong = total >= SIGNAL_STRONG      # Use final total
 
     result = {
-        "symbol":      symbol,
-        "tier":        tier,
-        "regime":      regime,
-        "total_score": round(total, 1),
-        "fired":       fired,
-        "strong":      strong,
-        "signals":     {k: round(v, 1) for k, v in s.items()},
-        "price":       df_4h["close"].iloc[-1],
-        "timestamp":   df_4h["timestamp"].iloc[-1],
+        "symbol":           symbol,
+        "tier":             tier,
+        "regime":           regime,
+        "total_score":      round(total, 1),
+        "fired":            fired,
+        "strong":           strong,
+        "signals":          {k: round(v, 1) for k, v in s.items()},
+        "price":            df_4h["close"].iloc[-1],
+        "timestamp":        df_4h["timestamp"].iloc[-1],
+        "sector_modifier":  sector_mod,
+        "unlock_penalty":   unlock_pen,
     }
 
     # Store to DB
