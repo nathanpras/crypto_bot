@@ -357,11 +357,15 @@ def score_coin(symbol: str, fear_greed: int = 50,
     s["onchain_score"]   = calc_onchain_score(symbol, db)
     s["sentiment_score"] = calc_sentiment_score(fear_greed, funding_rate)
 
-    # Weighted total (Phase 1)
-    total = sum(
-        s[f"{key}_score"] * weight
-        for key, weight in SIGNAL_WEIGHTS.items()
-        if f"{key}_score" in s
+    # Weighted total — explicit mapping because SIGNAL_WEIGHTS keys differ from s dict keys
+    total = (
+        s["trend_score"]     * SIGNAL_WEIGHTS["trend_alignment"] +
+        s["rsi_score"]       * SIGNAL_WEIGHTS["rsi_momentum"] +
+        s["macd_score"]      * SIGNAL_WEIGHTS["macd_momentum"] +
+        s["volume_score"]    * SIGNAL_WEIGHTS["volume_confirm"] +
+        s["wyckoff_score"]   * SIGNAL_WEIGHTS["wyckoff_phase"] +
+        s["onchain_score"]   * SIGNAL_WEIGHTS["onchain_signal"] +
+        s["sentiment_score"] * SIGNAL_WEIGHTS["sentiment_score"]
     )
 
     # Phase 2 modifiers
