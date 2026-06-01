@@ -453,10 +453,11 @@ class Database:
         ])
 
     def get_upcoming_unlocks(self, symbol: str, days: int = 30) -> list:
+        days = max(0, int(days))
         result = self.conn.execute(f"""
             SELECT * FROM token_unlocks
             WHERE symbol = ?
-              AND unlock_date BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL {int(days)} DAY
+              AND unlock_date BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL {days} DAY
             ORDER BY unlock_date
         """, [symbol]).df()
         return result.to_dict("records")
