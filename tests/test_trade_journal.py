@@ -112,3 +112,41 @@ def test_performance_gap_below_min_sample(db):
     })
     gap = detect_performance_gap(live_trades, db)
     assert gap is None
+
+
+# ── Task 3 tests ──────────────────────────────────────────────
+
+from trade_journal.reminder import check_tp_sl_reminders
+import asyncio
+
+
+def test_tp_sl_reminder_fires_on_candle(db):
+    """Reminder dikirim saat candle high melewati TP1."""
+    db.open_journal_trade(
+        symbol="SOLUSDT", entry_price=142.34, stop_price=128.10,
+        tp1_price=177.93, tp2_price=213.51,
+        signal_score=87.0, signal_id="SOL-0602",
+    )
+    sent = []
+    candle = {"symbol": "SOLUSDT", "high": 180.0, "low": 141.0}
+    asyncio.run(check_tp_sl_reminders(candle, db, sent.append))
+    assert len(sent) == 1
+    assert "TP1" in sent[0]
+    assert "SOLUSDT" in sent[0]
+
+
+def test_reminder_anti_spam_4h(db):
+    """Reminder tidak dikirim ulang dalam 4 jam."""
+    trade_id = db.open_journal_trade(
+        symbol="BTCUSDT", entry_price=68000, stop_price=62560,
+        tp1_price=82600, tp2_price=97200,
+        signal_score=80.0, signal_id="BTC-0602",
+    )
+    db.conn.execute("""
+        UPDATE journal_trades SET reminder_sent_at = ? WHERE id = ?
+    """, [datetime.utcnow() - timedelta(hours=1), trade_id])
+
+    sent = []
+    candle = {"symbol": "BTCUSDT", "high": 85000.0, "low": 67000.0}
+    asyncio.run(check_tp_sl_reminders(candle, db, sent.append))
+    assert len(sent) == 0
