@@ -74,3 +74,28 @@ def send_system_status(status: str, details: str = "") -> bool:
 
 def send_error(error: str) -> bool:
     return send(f"🚨 <b>APEX Error</b>\n<code>{error}</code>")
+
+
+def get_updates(offset: int = 0) -> list:
+    """
+    Poll Telegram getUpdates untuk command baru.
+    Dipanggil dari asyncio via run_in_executor (blocking call).
+    """
+    if not TOKEN or TOKEN == "your_bot_token_here":
+        return []
+    try:
+        r = requests.get(
+            f"{BASE}/getUpdates",
+            params={
+                "offset":          offset,
+                "timeout":         25,
+                "allowed_updates": ["message"],
+            },
+            timeout=30,
+        )
+        data = r.json()
+        if data.get("ok"):
+            return data.get("result", [])
+    except Exception as e:
+        logger.error(f"getUpdates failed: {e}")
+    return []
