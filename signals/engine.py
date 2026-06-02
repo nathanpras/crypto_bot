@@ -18,6 +18,8 @@ from collector.narrative import get_sector_modifier
 from collector.token_unlocks import get_unlock_penalty
 from collector.news import get_news_gate
 from collector.options import get_options_modifier
+from collector.social import get_social_modifier
+from collector.whale import get_whale_modifier
 
 
 def score_clamp(val: float) -> float:
@@ -385,6 +387,11 @@ def score_coin(symbol: str, fear_greed: int = 50,
     options_mod = get_options_modifier(symbol, db)
     total       = score_clamp(total + news_mod + options_mod)
 
+    # Phase 5: Social + Whale modifiers
+    social_mod = get_social_modifier(symbol, db)
+    whale_mod  = get_whale_modifier(symbol, db)
+    total      = score_clamp(total + social_mod + whale_mod)
+
     regime = detect_regime(df_4h)
     fired  = total >= SIGNAL_THRESHOLD   # Use final total
     strong = total >= SIGNAL_STRONG      # Use final total
@@ -403,6 +410,8 @@ def score_coin(symbol: str, fear_greed: int = 50,
         "unlock_penalty":   unlock_pen,
         "news_modifier":    news_mod,
         "options_modifier": options_mod,
+        "social_modifier":  social_mod,
+        "whale_modifier":   whale_mod,
     }
 
     # Store to DB

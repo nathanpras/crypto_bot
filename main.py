@@ -325,12 +325,16 @@ def main():
 
     elif args.collect_onchain:
         logger.info("Phase 2: Collecting on-chain data...")
+        db = get_db()
         collect_all_onchain(full=args.full)
         if args.full:
             logger.info("Collecting TVL data...")
             collect_all_tvl()
             logger.info("Collecting token unlock calendar...")
             collect_all_token_unlocks()
+        from collector.social import collect_all_social
+        logger.info("Collecting social metrics (CoinGecko)...")
+        collect_all_social(db)
 
     elif args.backtest:
         from backtesting.harness import run_backtest
