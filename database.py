@@ -4,7 +4,7 @@
 
 import duckdb
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta
 from loguru import logger
 from pathlib import Path
 
@@ -191,6 +191,29 @@ CREATE TABLE IF NOT EXISTS backtest_results (
 );
 """
 
+SCHEMA_PHASE3 = """
+CREATE TABLE IF NOT EXISTS journal_trades (
+    id                  VARCHAR PRIMARY KEY,
+    symbol              VARCHAR NOT NULL,
+    entry_price         DOUBLE NOT NULL,
+    stop_price          DOUBLE NOT NULL,
+    tp1_price           DOUBLE NOT NULL,
+    tp2_price           DOUBLE NOT NULL,
+    open_time           TIMESTAMP NOT NULL,
+    close_time          TIMESTAMP,
+    exit_price          DOUBLE,
+    exit_reason         VARCHAR,
+    pnl_usd             DOUBLE,
+    pnl_idr             DOUBLE,
+    r_multiple          DOUBLE,
+    signal_score        DOUBLE,
+    signal_id           VARCHAR,
+    status              VARCHAR DEFAULT 'open',
+    notes               VARCHAR,
+    reminder_sent_at    TIMESTAMP
+);
+"""
+
 
 class Database:
     def __init__(self, path: str = DB_PATH):
@@ -203,6 +226,7 @@ class Database:
     def _init_schema(self):
         self.conn.execute(SCHEMA)
         self.conn.execute(SCHEMA_PHASE2)
+        self.conn.execute(SCHEMA_PHASE3)
 
     # ── Candles ──────────────────────────────────────────────
 
@@ -274,7 +298,7 @@ class Database:
             timestamp = datetime.utcnow()
         self.conn.execute("""
             INSERT OR REPLACE INTO signals VALUES (
-                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
             )
         """, [
             symbol, timestamp,
@@ -504,6 +528,111 @@ class Database:
 
     def close(self):
         self.conn.close()
+
+    # ── Journal Trades ───────────────────────────────────────
+
+    def open_journal_trade(self, symbol: str, entry_price: float,
+                           stop_price: float, tp1_price: float,
+                           tp2_price: float, signal_score, signal_id) -> str:
+        import uuid
+        trade_id  = str(uuid.uuid4())[:12]
+        open_time = datetime.utcnow()
+        self.conn.execute("""
+            INSERT INTO journal_trades
+                (id, symbol, entry_price, stop_price, tp1_price, tp2_price,
+                 open_time, signal_score, signal_id, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open')
+        """, [trade_id, symbol, entry_price, stop_price,
+              tp1_price, tp2_price, open_time, signal_score, signal_id])
+        return trade_id
+
+    def close_journal_trade(self, trade_id: str, exit_price: float,
+                            exit_reason: str, pnl_usd: float,
+                            pnl_idr: float, r_multiple: float):
+        self.conn.execute("""
+            UPDATE journal_trades
+            SET status='closed', close_time=?, exit_price=?,
+                exit_reason=?, pnl_usd=?, pnl_idr=?, r_multiple=?
+            WHERE id=?
+        """, [datetime.utcnow(), exit_price, exit_reason,
+              pnl_usd, pnl_idr, r_multiple, trade_id])
+
+    def get_open_journal_trades(self) -> list:
+        rows = self.conn.execute("""
+            SELECT id, symbol, entry_price, stop_price, tp1_price, tp2_price,
+                   open_time, signal_score, signal_id, reminder_sent_at, status
+            FROM journal_trades WHERE status = 'open'
+            ORDER BY open_time
+        """).fetchall()
+        cols = ["id", "symbol", "entry_price", "stop_price", "tp1_price",
+                "tp2_price", "open_time", "signal_score", "signal_id",
+                "reminder_sent_at", "status"]
+        return [dict(zip(cols, row)) for row in rows]
+
+    def get_open_journal_trades_by_symbol(self, symbol: str) -> list:
+        rows = self.conn.execute("""
+            SELECT id, symbol, entry_price, stop_price, tp1_price, tp2_price,
+                   open_time, signal_score, signal_id, reminder_sent_at, status
+            FROM journal_trades WHERE status = 'open' AND symbol = ?
+            ORDER BY open_time
+        """, [symbol]).fetchall()
+        cols = ["id", "symbol", "entry_price", "stop_price", "tp1_price",
+                "tp2_price", "open_time", "signal_score", "signal_id",
+                "reminder_sent_at", "status"]
+        return [dict(zip(cols, row)) for row in rows]
+
+    def get_open_journal_trade_by_symbol(self, symbol: str):
+        trades = self.get_open_journal_trades_by_symbol(symbol)
+        return trades[-1] if trades else None
+
+    def get_journal_trades_by_period(self, date_from: str, date_to: str):
+        return self.conn.execute("""
+            SELECT symbol, entry_price, exit_price, exit_reason,
+                   pnl_usd, pnl_idr, r_multiple, signal_score,
+                   open_time, close_time
+            FROM journal_trades
+            WHERE status = 'closed'
+              AND close_time >= ? AND close_time <= ?
+            ORDER BY close_time
+        """, [date_from, date_to + " 23:59:59"]).df()
+
+    def get_last_signal_for_symbol(self, symbol: str, within_hours: int = 48):
+        cutoff = datetime.utcnow() - timedelta(hours=within_hours)
+        result = self.conn.execute("""
+            SELECT timestamp, total_score
+            FROM signals
+            WHERE symbol = ? AND timestamp >= ? AND fire = TRUE
+            ORDER BY timestamp DESC LIMIT 1
+        """, [symbol, cutoff]).fetchone()
+        if result:
+            ts = result[0]
+            sid = f"{symbol[:3]}-{ts.strftime('%m%d')}" if hasattr(ts, 'strftime') else f"{symbol[:3]}-manual"
+            return {"total_score": result[1], "signal_id": sid}
+        return None
+
+    def update_journal_reminder_sent(self, trade_id: str):
+        self.conn.execute("""
+            UPDATE journal_trades SET reminder_sent_at = ? WHERE id = ?
+        """, [datetime.utcnow(), trade_id])
+
+    def get_last_deployed_backtest(self):
+        result = self.conn.execute("""
+            SELECT val_win_rate, avg_r, val_sharpe
+            FROM backtest_results
+            WHERE deployed = TRUE
+            ORDER BY run_date DESC LIMIT 1
+        """).fetchone()
+        if result:
+            return {"val_win_rate": result[0], "avg_r": result[1], "val_sharpe": result[2]}
+        return None
+
+    def get_latest_price(self, symbol: str):
+        result = self.conn.execute("""
+            SELECT close FROM candles
+            WHERE symbol = ? AND timeframe = '4h'
+            ORDER BY timestamp DESC LIMIT 1
+        """, [symbol]).fetchone()
+        return result[0] if result else None
 
 
 # Singleton
