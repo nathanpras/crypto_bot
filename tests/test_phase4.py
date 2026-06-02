@@ -64,3 +64,21 @@ def test_engine_blocked_by_news_returns_zero(db):
     gate = get_news_gate("ARBUSDT", db)
     assert gate["blocked"] is True
     assert gate["modifier"] == 0
+
+
+from collector.options import calc_options_modifier, get_options_modifier
+
+
+def test_options_modifier_fear_market(db):
+    """Put/call > 1.3 + skew > 5 harus return modifier negatif."""
+    db.upsert_options_metrics("BTCUSDT", {
+        "put_call_ratio": 1.5, "skew_25d": 7.0, "iv_atm": 0.8
+    })
+    mod = get_options_modifier("BTCUSDT", db)
+    assert mod <= -5
+
+
+def test_options_modifier_altcoin_returns_zero(db):
+    """Altcoin (bukan BTC/ETH) harus return 0."""
+    mod = get_options_modifier("SOLUSDT", db)
+    assert mod == 0.0
