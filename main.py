@@ -303,6 +303,8 @@ def main():
                         help="Jalankan Optuna optimizer untuk signal weights")
     parser.add_argument("--trials", type=int, default=300,
                         help="Jumlah Optuna trials (default: 300)")
+    parser.add_argument("--compute-signals", action="store_true",
+                        help="Hitung sinyal historis dari candle data (diperlukan sebelum --backtest)")
 
     args = parser.parse_args()
 
@@ -336,6 +338,15 @@ def main():
         logger.info("Collecting social metrics (CoinGecko)...")
         collect_all_social(db)
 
+    elif args.compute_signals:
+        from backtesting.harness import compute_historical_signals
+        logger.info("Computing historical signals from candle data...")
+        n = compute_historical_signals(
+            date_from=args.date_from,
+            date_to=args.date_to,
+        )
+        print(f"\nSelesai: {n:,} signal dihitung. Sekarang bisa jalankan --backtest.")
+
     elif args.backtest:
         from backtesting.harness import run_backtest
         run_backtest(date_from=args.date_from, date_to=args.date_to)
@@ -353,6 +364,7 @@ def main():
         print("  python3 main.py --fetch-history          ← Download 2 tahun data")
         print("  python3 main.py --collect-onchain --full ← Fetch on-chain + TVL + unlocks")
         print("  python3 main.py --scan-once              ← Test satu scan")
+        print("  python3 main.py --compute-signals         <- Hitung sinyal historis")
         print("  python3 main.py --backtest               ← Validasi strategi")
         print("  python3 main.py --optimize-weights       ← Cari bobot optimal")
         print("  python3 main.py --run                    ← Start live mode")

@@ -250,6 +250,117 @@ def replay_scores_for_coin(
     return total
 
 
+def compute_historical_signals(
+    date_from: Optional[str] = None,
+    date_to:   Optional[str] = None,
+) -> int:
+    """
+    Compute signal scores for all coins using historical candle data.
+    For each 4H candle with enough history (>=210 candles before it),
+    compute all 7 signal scores and store in the signals table.
+    This populates the signals table so --backtest can read from it.
+    Returns total signal rows computed.
+    """
+    import ta as _ta
+    import numpy as np
+    from signals.engine import (
+        calc_trend_score, calc_rsi_score, calc_macd_score,
+        calc_volume_score, calc_wyckoff_score, calc_sentiment_score,
+        detect_regime, score_clamp
+    )
+    from config import SIGNAL_WEIGHTS, SIGNAL_THRESHOLD
+
+    if date_from is None:
+        date_from = "2024-06-01"
+    if date_to is None:
+        date_to = "2025-12-31"
+
+    db    = get_db()
+    total = 0
+
+    logger.info(f"Computing historical signals: {date_from} to {date_to}")
+
+    for symbol, info in COINS.items():
+        try:
+            # Get ALL 4H candles for context (need 210+ before each point)
+            all_4h = db.get_candles(symbol, "4h", limit=5000)
+            all_1d = db.get_candles(symbol, "1d", limit=800)
+
+            if all_4h.empty or len(all_4h) < 220:
+                logger.debug(f"  {symbol}: not enough 4H data, skipping")
+                continue
+
+            all_4h["timestamp"] = pd.to_datetime(all_4h["timestamp"])
+            all_1d["timestamp"] = pd.to_datetime(all_1d["timestamp"]) if not all_1d.empty else all_1d
+
+            # Filter to the date range we want to compute signals FOR
+            mask = (
+                (all_4h["timestamp"] >= pd.Timestamp(date_from)) &
+                (all_4h["timestamp"] <= pd.Timestamp(date_to))
+            )
+            target_indices = all_4h[mask].index.tolist()
+
+            if not target_indices:
+                logger.debug(f"  {symbol}: no candles in date range")
+                continue
+
+            coin_count = 0
+            for idx in target_indices:
+                # Use all candles UP TO and INCLUDING this candle
+                pos = all_4h.index.get_loc(idx)
+                if pos < 210:
+                    continue   # not enough history for EMA-200
+
+                window_4h = all_4h.iloc[max(0, pos-219):pos+1].reset_index(drop=True)
+
+                # Get 1D candles up to this timestamp
+                ts = all_4h.loc[idx, "timestamp"]
+                window_1d = all_1d[all_1d["timestamp"] <= ts].tail(60).reset_index(drop=True)
+
+                try:
+                    s = {}
+                    s["trend_score"]     = calc_trend_score(window_4h, window_1d)
+                    s["rsi_score"]       = calc_rsi_score(window_4h)
+                    s["macd_score"]      = calc_macd_score(window_4h)
+                    s["volume_score"]    = calc_volume_score(window_4h)
+                    s["wyckoff_score"]   = calc_wyckoff_score(window_4h)
+                    s["onchain_score"]   = 50.0   # no live on-chain in historical mode
+                    s["sentiment_score"] = 50.0   # no live sentiment in historical mode
+
+                    weights = SIGNAL_WEIGHTS
+                    total_score = (
+                        s["trend_score"]     * weights["trend_alignment"] +
+                        s["rsi_score"]       * weights["rsi_momentum"] +
+                        s["macd_score"]      * weights["macd_momentum"] +
+                        s["volume_score"]    * weights["volume_confirm"] +
+                        s["wyckoff_score"]   * weights["wyckoff_phase"] +
+                        s["onchain_score"]   * weights["onchain_signal"] +
+                        s["sentiment_score"] * weights["sentiment_score"]
+                    )
+                    total_score = score_clamp(total_score)
+                    regime      = detect_regime(window_4h)
+
+                    db.upsert_signal(symbol, {
+                        **s,
+                        "total_score": total_score,
+                        "regime":      regime,
+                    }, timestamp=ts)
+
+                    coin_count += 1
+
+                except Exception:
+                    continue
+
+            total += coin_count
+            logger.info(f"  {symbol}: {coin_count} signals computed")
+
+        except Exception as e:
+            logger.warning(f"  {symbol}: failed — {e}")
+
+    logger.info(f"Done. Total signals computed: {total:,}")
+    return total
+
+
 def run_backtest(
     date_from: Optional[str] = None,
     date_to:   Optional[str] = None,
