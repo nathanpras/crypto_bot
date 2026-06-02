@@ -214,6 +214,37 @@ CREATE TABLE IF NOT EXISTS journal_trades (
 );
 """
 
+SCHEMA_PHASE4 = """
+CREATE TABLE IF NOT EXISTS coin_news (
+    id           VARCHAR PRIMARY KEY,
+    symbol       VARCHAR NOT NULL,
+    published_at TIMESTAMP NOT NULL,
+    title        VARCHAR,
+    sentiment    VARCHAR,
+    is_critical  BOOLEAN DEFAULT FALSE,
+    votes_pos    INTEGER DEFAULT 0,
+    votes_neg    INTEGER DEFAULT 0,
+    source       VARCHAR
+);
+
+CREATE TABLE IF NOT EXISTS news_blocks (
+    symbol         VARCHAR PRIMARY KEY,
+    blocked_at     TIMESTAMP NOT NULL,
+    reason         VARCHAR,
+    expires_at     TIMESTAMP NOT NULL,
+    manual_unblock BOOLEAN DEFAULT FALSE
+);
+
+CREATE TABLE IF NOT EXISTS options_metrics (
+    symbol          VARCHAR NOT NULL,
+    timestamp       TIMESTAMP NOT NULL,
+    put_call_ratio  DOUBLE,
+    skew_25d        DOUBLE,
+    iv_atm          DOUBLE,
+    PRIMARY KEY (symbol, timestamp)
+);
+"""
+
 
 class Database:
     def __init__(self, path: str = DB_PATH):
@@ -227,6 +258,7 @@ class Database:
         self.conn.execute(SCHEMA)
         self.conn.execute(SCHEMA_PHASE2)
         self.conn.execute(SCHEMA_PHASE3)
+        self.conn.execute(SCHEMA_PHASE4)
 
     # ── Candles ──────────────────────────────────────────────
 
@@ -633,6 +665,95 @@ class Database:
             ORDER BY timestamp DESC LIMIT 1
         """, [symbol]).fetchone()
         return result[0] if result else None
+
+    # ── Phase 4: News & Options ───────────────────────────────────
+
+    def upsert_coin_news(self, symbol: str, items: list):
+        for item in items:
+            self.conn.execute("""
+                INSERT OR REPLACE INTO coin_news
+                    (id, symbol, published_at, title, sentiment,
+                     is_critical, votes_pos, votes_neg, source)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, [
+                item["id"], symbol,
+                item.get("published_at", datetime.utcnow()),
+                item.get("title", ""),
+                item.get("sentiment", "neutral"),
+                item.get("is_critical", False),
+                item.get("votes_pos", 0),
+                item.get("votes_neg", 0),
+                item.get("source", ""),
+            ])
+
+    def get_recent_news(self, symbol: str, hours: int = 24) -> list:
+        cutoff = datetime.utcnow() - timedelta(hours=hours)
+        rows = self.conn.execute("""
+            SELECT id, title, sentiment, is_critical, votes_pos, votes_neg
+            FROM coin_news
+            WHERE symbol = ? AND published_at >= ?
+            ORDER BY published_at DESC
+        """, [symbol, cutoff]).fetchall()
+        cols = ["id", "title", "sentiment", "is_critical", "votes_pos", "votes_neg"]
+        return [dict(zip(cols, r)) for r in rows]
+
+    def set_news_block(self, symbol: str, reason: str):
+        from config import NEWS_BLOCK_HOURS
+        now = datetime.utcnow()
+        expires = now + timedelta(hours=NEWS_BLOCK_HOURS)
+        self.conn.execute("""
+            INSERT OR REPLACE INTO news_blocks
+                (symbol, blocked_at, reason, expires_at, manual_unblock)
+            VALUES (?, ?, ?, ?, FALSE)
+        """, [symbol, now, reason, expires])
+
+    def is_news_blocked(self, symbol: str):
+        result = self.conn.execute("""
+            SELECT reason, expires_at FROM news_blocks
+            WHERE symbol = ? AND expires_at > ? AND manual_unblock = FALSE
+        """, [symbol, datetime.utcnow()]).fetchone()
+        if result:
+            return {"reason": result[0], "expires_at": result[1]}
+        return None
+
+    def clear_news_block(self, symbol: str):
+        self.conn.execute("""
+            UPDATE news_blocks SET manual_unblock = TRUE WHERE symbol = ?
+        """, [symbol])
+
+    def upsert_options_metrics(self, symbol: str, metrics: dict):
+        self.conn.execute("""
+            INSERT OR REPLACE INTO options_metrics
+                (symbol, timestamp, put_call_ratio, skew_25d, iv_atm)
+            VALUES (?, ?, ?, ?, ?)
+        """, [
+            symbol, datetime.utcnow(),
+            metrics.get("put_call_ratio"),
+            metrics.get("skew_25d"),
+            metrics.get("iv_atm"),
+        ])
+
+    def get_latest_options(self, symbol: str):
+        result = self.conn.execute("""
+            SELECT put_call_ratio, skew_25d, iv_atm, timestamp
+            FROM options_metrics
+            WHERE symbol = ?
+            ORDER BY timestamp DESC LIMIT 1
+        """, [symbol]).fetchone()
+        if result:
+            return {
+                "put_call_ratio": result[0],
+                "skew_25d":       result[1],
+                "iv_atm":         result[2],
+                "timestamp":      result[3],
+            }
+        return None
+
+    def cleanup_old_news(self, days: int = 7):
+        cutoff = datetime.utcnow() - timedelta(days=days)
+        self.conn.execute(
+            "DELETE FROM coin_news WHERE published_at < ?", [cutoff]
+        )
 
 
 # Singleton

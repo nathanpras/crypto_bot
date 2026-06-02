@@ -196,3 +196,21 @@ FUTURES_SCORING = {
     "ls_ratio_extreme_short":  0.8,   # L/S ratio < ini = extreme short, squeeze setup
     "ls_ratio_extreme_long":   2.0,   # L/S ratio > ini = crowded longs, risky
 }
+
+# ─── Phase 4: News Gate ───────────────────────────────────────────────────────
+CRITICAL_KEYWORDS = [
+    "hack", "hacked", "exploit", "exploited", "stolen", "breach",
+    "delisting", "delisted", "rug", "scam", "fraud",
+    "arrested", "sec charges", "shutdown", "suspended", "insolvent",
+]
+NEWS_BLOCK_HOURS       = 6
+NEWS_POLL_INTERVAL_SEC = 300   # 5 menit
+
+# ─── Phase 4: Options Flow Scoring ───────────────────────────────────────────
+OPTIONS_SCORING = {
+    "strong_bullish": {"pc_max": 0.7,  "skew_max": -3.0, "modifier":  10},
+    "mild_bullish":   {"pc_max": 1.0,                    "modifier":   4},
+    "neutral":        {"pc_max": 1.3,                    "modifier":   0},
+    "mild_bearish":   {"pc_max": 1.3,                    "modifier":  -5},
+    "strong_bearish": {"pc_min": 1.3,  "skew_min":  5.0, "modifier": -15},
+}
