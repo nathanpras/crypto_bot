@@ -56,6 +56,58 @@ SIGNAL_WEIGHTS = {
     "sentiment_score":    0.10,  # Fear & Greed + funding rates
 }
 
+# ─── Phase 6: Regime-Adaptive Signal Weights ─────────────────
+REGIME_WEIGHTS = {
+    "TRENDING_BULL": {
+        "trend_alignment":  0.30,
+        "rsi_momentum":     0.12,
+        "macd_momentum":    0.10,
+        "volume_confirm":   0.15,
+        "wyckoff_phase":    0.10,
+        "onchain_signal":   0.13,
+        "sentiment_score":  0.10,
+    },
+    "TRENDING_BEAR": {
+        "trend_alignment":  0.25,
+        "rsi_momentum":     0.10,
+        "macd_momentum":    0.08,
+        "volume_confirm":   0.12,
+        "wyckoff_phase":    0.10,
+        "onchain_signal":   0.20,
+        "sentiment_score":  0.15,
+    },
+    "RANGING": {
+        "trend_alignment":  0.10,
+        "rsi_momentum":     0.25,
+        "macd_momentum":    0.12,
+        "volume_confirm":   0.15,
+        "wyckoff_phase":    0.22,
+        "onchain_signal":   0.10,
+        "sentiment_score":  0.06,
+    },
+    "VOLATILE": {
+        "trend_alignment":  0.15,
+        "rsi_momentum":     0.15,
+        "macd_momentum":    0.10,
+        "volume_confirm":   0.20,
+        "wyckoff_phase":    0.10,
+        "onchain_signal":   0.20,
+        "sentiment_score":  0.10,
+    },
+    "TRANSITIONING": {
+        "trend_alignment":  0.18,
+        "rsi_momentum":     0.18,
+        "macd_momentum":    0.12,
+        "volume_confirm":   0.17,
+        "wyckoff_phase":    0.15,
+        "onchain_signal":   0.12,
+        "sentiment_score":  0.08,
+    },
+}
+
+# ─── Phase 6: Kill Zone Settings ─────────────────────────────
+KILL_ZONE_BONUS = 5
+
 SIGNAL_THRESHOLD = 70       # Minimum score to consider a trade
 SIGNAL_STRONG    = 82       # "Perfect Storm" threshold → 3× size
 
