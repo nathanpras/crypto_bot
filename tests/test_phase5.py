@@ -28,3 +28,29 @@ def test_upsert_and_get_social_metrics(db):
 
 def test_get_latest_social_returns_none_if_no_data(db):
     assert db.get_latest_social("XRPUSDT") is None
+
+
+from collector.social import calc_social_score, get_social_modifier
+
+
+def test_calc_social_score_bullish():
+    score = calc_social_score(
+        twitter_change_30d=7.0,
+        reddit_change_30d=5.0,
+        github_commits_4w=80,
+    )
+    assert score > 0
+
+
+def test_calc_social_score_bearish():
+    score = calc_social_score(
+        twitter_change_30d=-7.0,
+        reddit_change_30d=-5.0,
+        github_commits_4w=0,
+    )
+    assert score < 0
+
+
+def test_get_social_modifier_no_data_returns_zero(db):
+    mod = get_social_modifier("DOTUSDT", db)
+    assert mod == 0.0
