@@ -190,7 +190,15 @@ async def live_loop():
         connect_and_stream(),
         poll_telegram_commands(db),
         _run_weekly_report_scheduler(db),
+        _poll_news_loop(db),
     )
+
+
+async def _poll_news_loop(db) -> None:
+    """Wrapper untuk poll_news_realtime — poll berita tiap 5 menit."""
+    from collector.news import poll_news_realtime
+    from utils.telegram import send
+    await poll_news_realtime(db, send)
 
 
 async def _run_weekly_report_scheduler(db) -> None:

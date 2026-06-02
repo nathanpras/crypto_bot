@@ -76,6 +76,13 @@ async def handle_command(text: str, db, send_fn) -> None:
     elif cmd == "/report":
         await cmd_report(db, send_fn)
 
+    elif cmd == "/unblock":
+        if len(parts) < 2:
+            send_fn("❓ Format: <code>/unblock SYMBOL</code>\n"
+                    "Contoh: <code>/unblock SOLUSDT</code>")
+            return
+        await cmd_unblock(parts[1].upper(), db, send_fn)
+
     else:
         send_fn(
             "❓ <b>Command yang tersedia:</b>\n"
@@ -191,6 +198,21 @@ async def cmd_status(db, send_fn) -> None:
             )
 
     send_fn("\n".join(lines))
+
+
+async def cmd_unblock(symbol: str, db, send_fn) -> None:
+    """Handle /unblock — lepas news block manual."""
+    block = db.is_news_blocked(symbol)
+    if not block:
+        send_fn(f"ℹ️ {symbol} tidak sedang diblokir.")
+        return
+    db.clear_news_block(symbol)
+    send_fn(
+        f"✅ <b>{symbol} news block dilepas</b>\n"
+        f"Alasan sebelumnya: <i>{block['reason']}</i>\n"
+        f"Sinyal kembali aktif."
+    )
+    logger.info(f"Manual unblock: {symbol}")
 
 
 async def cmd_report(db, send_fn) -> None:

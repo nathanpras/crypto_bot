@@ -7,7 +7,7 @@
 # ============================================================
 
 import pandas as pd
-import pandas_ta as ta
+import ta as _ta
 import numpy as np
 from loguru import logger
 
@@ -16,6 +16,8 @@ from database import get_db
 from collector.onchain_enhanced import calc_onchain_score_enhanced
 from collector.narrative import get_sector_modifier
 from collector.token_unlocks import get_unlock_penalty
+from collector.news import get_news_gate
+from collector.options import get_options_modifier
 
 
 def score_clamp(val: float) -> float:
@@ -34,9 +36,9 @@ def calc_trend_score(df_4h: pd.DataFrame, df_1d: pd.DataFrame) -> float:
 
     # Calculate EMAs
     close_4h = df_4h["close"]
-    ema20  = ta.ema(close_4h, 20).iloc[-1]
-    ema50  = ta.ema(close_4h, 50).iloc[-1]
-    ema200 = ta.ema(close_4h, 200).iloc[-1]
+    ema20  = _ta.trend.EMAIndicator(close_4h, window=20).ema_indicator().iloc[-1]
+    ema50  = _ta.trend.EMAIndicator(close_4h, window=50).ema_indicator().iloc[-1]
+    ema200 = _ta.trend.EMAIndicator(close_4h, window=200).ema_indicator().iloc[-1]
     price  = close_4h.iloc[-1]
 
     score = 50.0
@@ -52,7 +54,7 @@ def calc_trend_score(df_4h: pd.DataFrame, df_1d: pd.DataFrame) -> float:
     # Daily timeframe confirmation
     if not df_1d.empty and len(df_1d) >= 50:
         close_1d = df_1d["close"]
-        ema50_1d  = ta.ema(close_1d, 50).iloc[-1]
+        ema50_1d  = _ta.trend.EMAIndicator(close_1d, window=50).ema_indicator().iloc[-1]
         if close_1d.iloc[-1] > ema50_1d:  score += 13
         else:                              score -= 13
 
@@ -72,7 +74,7 @@ def calc_rsi_score(df_4h: pd.DataFrame) -> float:
         return 50.0
 
     close = df_4h["close"]
-    rsi   = ta.rsi(close, 14)
+    rsi   = _ta.momentum.RSIIndicator(close, window=14).rsi()
     cur   = rsi.iloc[-1]
     prev  = rsi.iloc[-5:].mean()
 
@@ -109,20 +111,16 @@ def calc_macd_score(df_4h: pd.DataFrame) -> float:
     if df_4h.empty or len(df_4h) < 40:
         return 50.0
 
-    close    = df_4h["close"]
-    macd_df  = ta.macd(close, fast=12, slow=26, signal=9)
-    if macd_df is None or macd_df.empty:
+    close = df_4h["close"]
+    macd_ind = _ta.trend.MACD(close, window_slow=26, window_fast=12, window_sign=9)
+    hist      = macd_ind.macd_diff()
+    macd_line = macd_ind.macd()
+    sig_line  = macd_ind.macd_signal()
+
+    if hist is None or hist.dropna().empty:
         return 50.0
 
-    col_hist  = [c for c in macd_df.columns if "h" in c.lower()]
-    col_macd  = [c for c in macd_df.columns if "macd" in c.lower() and "h" not in c.lower() and "s" not in c.lower()]
-    col_sig   = [c for c in macd_df.columns if "s" in c.lower() and "h" not in c.lower()]
-
-    if not col_hist:
-        return 50.0
-
-    hist     = macd_df[col_hist[0]]
-    cur_hist = hist.iloc[-1]
+    cur_hist  = hist.iloc[-1]
     prev_hist = hist.iloc[-2] if len(hist) > 1 else 0
 
     score = 50.0
@@ -134,14 +132,14 @@ def calc_macd_score(df_4h: pd.DataFrame) -> float:
     if cur_hist < 0 and cur_hist < prev_hist:    score -= 15  # Expanding bearish
 
     # MACD line vs signal cross
-    if col_macd and col_sig:
-        macd_line = macd_df[col_macd[0]].iloc[-1]
-        sig_line  = macd_df[col_sig[0]].iloc[-1]
-        prev_macd = macd_df[col_macd[0]].iloc[-2] if len(macd_df) > 1 else macd_line
-        prev_sig  = macd_df[col_sig[0]].iloc[-2] if len(macd_df) > 1 else sig_line
+    if macd_line is not None and sig_line is not None:
+        cur_macd  = macd_line.iloc[-1]
+        cur_sig   = sig_line.iloc[-1]
+        prev_macd = macd_line.iloc[-2] if len(macd_line) > 1 else cur_macd
+        prev_sig  = sig_line.iloc[-2]  if len(sig_line)  > 1 else cur_sig
 
         # Bullish cross (MACD crosses above signal)
-        if macd_line > sig_line and prev_macd <= prev_sig:
+        if cur_macd > cur_sig and prev_macd <= prev_sig:
             score += 15
 
     return score_clamp(score)
@@ -293,27 +291,16 @@ def detect_regime(df_4h: pd.DataFrame) -> str:
     if df_4h.empty or len(df_4h) < 30:
         return "UNKNOWN"
 
-    adx_df = ta.adx(df_4h["high"], df_4h["low"], df_4h["close"], length=14)
-    if adx_df is None or adx_df.empty:
-        return "UNKNOWN"
+    adx_ind = _ta.trend.ADXIndicator(df_4h["high"], df_4h["low"], df_4h["close"], window=14)
+    adx = adx_ind.adx().iloc[-1]
 
-    adx_col = [c for c in adx_df.columns if "ADX" in c and "+" not in c and "-" not in c]
-    dmp_col = [c for c in adx_df.columns if "+" in c]
-    dmn_col = [c for c in adx_df.columns if "-" in c]
-
-    if not adx_col:
-        return "UNKNOWN"
-
-    adx = adx_df[adx_col[0]].iloc[-1]
     if pd.isna(adx):
         return "UNKNOWN"
 
     if adx > FILTERS["adx_trending"]:
-        if dmp_col and dmn_col:
-            dmp = adx_df[dmp_col[0]].iloc[-1]
-            dmn = adx_df[dmn_col[0]].iloc[-1]
-            return "TRENDING_BULL" if dmp > dmn else "TRENDING_BEAR"
-        return "TRENDING"
+        dmp = adx_ind.adx_pos().iloc[-1]
+        dmn = adx_ind.adx_neg().iloc[-1]
+        return "TRENDING_BULL" if dmp > dmn else "TRENDING_BEAR"
     elif adx < FILTERS["adx_ranging"]:
         return "RANGING"
     else:
@@ -373,6 +360,31 @@ def score_coin(symbol: str, fear_greed: int = 50,
     unlock_pen  = get_unlock_penalty(symbol, db)
     total       = score_clamp(total + sector_mod - unlock_pen)
 
+    # Phase 4: News hard gate
+    news_check = get_news_gate(symbol, db)
+    if news_check["blocked"]:
+        return {
+            "symbol":           symbol,
+            "tier":             tier,
+            "regime":           "BLOCKED",
+            "total_score":      0.0,
+            "fired":            False,
+            "strong":           False,
+            "signals":          {},
+            "price":            df_4h["close"].iloc[-1],
+            "timestamp":        df_4h["timestamp"].iloc[-1],
+            "sector_modifier":  sector_mod,
+            "unlock_penalty":   unlock_pen,
+            "news_modifier":    0.0,
+            "options_modifier": 0.0,
+            "blocked_reason":   f"NEWS: {news_check['reason']}",
+        }
+
+    # Phase 4: Score modifiers
+    news_mod    = news_check["modifier"]
+    options_mod = get_options_modifier(symbol, db)
+    total       = score_clamp(total + news_mod + options_mod)
+
     regime = detect_regime(df_4h)
     fired  = total >= SIGNAL_THRESHOLD   # Use final total
     strong = total >= SIGNAL_STRONG      # Use final total
@@ -389,6 +401,8 @@ def score_coin(symbol: str, fear_greed: int = 50,
         "timestamp":        df_4h["timestamp"].iloc[-1],
         "sector_modifier":  sector_mod,
         "unlock_penalty":   unlock_pen,
+        "news_modifier":    news_mod,
+        "options_modifier": options_mod,
     }
 
     # Store to DB
