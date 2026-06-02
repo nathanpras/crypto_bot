@@ -54,3 +54,42 @@ def test_calc_social_score_bearish():
 def test_get_social_modifier_no_data_returns_zero(db):
     mod = get_social_modifier("DOTUSDT", db)
     assert mod == 0.0
+
+
+from collector.whale import calc_whale_score, get_whale_modifier
+
+
+def test_whale_score_btc_accumulation(db):
+    """BTC net outflow = accumulation = positive score."""
+    from datetime import date, timedelta
+    for i in range(7):
+        d = date.today() - timedelta(days=i)
+        db.conn.execute("""
+            INSERT OR REPLACE INTO onchain
+                (asset, date, exch_inflow, exch_outflow, exch_netflow,
+                 mvrv_ratio, nupl, active_addr)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, ["BTC", d, 500, 800, -300, 1.5, 0.4, 900000])
+    score = calc_whale_score("BTCUSDT", db)
+    assert score > 0
+
+
+def test_whale_modifier_altcoin_no_data_returns_zero(db):
+    """Altcoin without futures_metrics data returns 0."""
+    mod = get_whale_modifier("NEARUSDT", db)
+    assert mod == 0.0
+
+
+def test_whale_score_btc_distribution(db):
+    """BTC net inflow = distribution = negative score."""
+    from datetime import date, timedelta
+    for i in range(7):
+        d = date.today() - timedelta(days=i)
+        db.conn.execute("""
+            INSERT OR REPLACE INTO onchain
+                (asset, date, exch_inflow, exch_outflow, exch_netflow,
+                 mvrv_ratio, nupl, active_addr)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, ["BTC", d, 2000, 500, 1500, 2.5, 0.7, 850000])
+    score = calc_whale_score("BTCUSDT", db)
+    assert score < 0
