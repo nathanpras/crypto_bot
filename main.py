@@ -13,6 +13,7 @@
 import sys
 import asyncio
 import argparse
+from datetime import datetime
 from pathlib import Path
 from loguru import logger
 from dotenv import load_dotenv
@@ -117,18 +118,21 @@ async def live_loop():
     Main live loop:
     - WebSocket streams 24/7
     - Signal engine runs on every 4H candle close
-    - Telegram alerts sent automatically
+    - Telegram bot polling for journal commands
+    - Weekly P&L report + performance gap detector
     """
     from collector.realtime import on_candle_close, connect_and_stream
+    from trade_journal.bot import poll_telegram_commands
 
     logger.info("Starting APEX live mode...")
     send_system_status("started", "Live scanning all coins 24/7")
 
+    db         = get_db()
     macro_data = fetch_all_macro()
-    _state = {
-        "macro": macro_data,
+    _state     = {
+        "macro":             macro_data,
         "last_macro_update": 0,
-        "scan_count": 0,
+        "scan_count":        0,
     }
 
     @on_candle_close
@@ -137,14 +141,12 @@ async def live_loop():
         symbol = candle["symbol"]
         tf     = candle["timeframe"]
 
-        # Only trigger full scan on 4H closes
         if tf != "4h":
             return
 
         logger.info(f"4H candle closed: {symbol} @ {candle['close']:.4f}")
         _state["scan_count"] += 1
 
-        # Refresh macro every 24 hours (144 × 4H candles)
         if _state["scan_count"] % 144 == 0:
             logger.info("Refreshing macro data...")
             _state["macro"] = fetch_all_macro()
@@ -159,7 +161,6 @@ async def live_loop():
 
         fear_greed = macro["macro"]["fear_greed"].get("value", 50)
 
-        # Score just the coin whose candle just closed (fast)
         from signals.engine import score_coin
         result = score_coin(symbol, fear_greed=fear_greed,
                             allowed_tiers=f2["allowed_tiers"])
@@ -181,13 +182,46 @@ async def live_loop():
                 logger.warning(f"Portfolio guard: {guard['reason']}")
                 return
 
-            # Send Telegram alert
             msg = format_trade_for_telegram(calc, result)
             send_signal_alert(msg)
             logger.info(f"🔔 SIGNAL SENT: {symbol} | Score: {result['total_score']}")
 
-    # Start WebSocket (runs forever)
-    await connect_and_stream()
+    await asyncio.gather(
+        connect_and_stream(),
+        poll_telegram_commands(db),
+        _run_weekly_report_scheduler(db),
+    )
+
+
+async def _run_weekly_report_scheduler(db) -> None:
+    """Kirim laporan P&L setiap Senin jam 00:00 UTC."""
+    from datetime import timedelta
+    from trade_journal.journal import (generate_weekly_report,
+                                       detect_performance_gap, format_gap_alert)
+
+    while True:
+        now        = datetime.utcnow()
+        days_ahead = (7 - now.weekday()) % 7 or 7
+        next_run   = now.replace(hour=0, minute=0, second=0, microsecond=0) + \
+                     timedelta(days=days_ahead)
+        wait_secs  = (next_run - now).total_seconds()
+        logger.info(f"Weekly report scheduled in {wait_secs/3600:.1f} jam")
+        await asyncio.sleep(wait_secs)
+
+        date_to   = datetime.utcnow().date()
+        date_from = date_to - timedelta(days=7)
+
+        trades_df = db.get_journal_trades_by_period(str(date_from), str(date_to))
+        report    = generate_weekly_report(trades_df, str(date_from), str(date_to))
+        send_signal_alert(report)
+        logger.info("Weekly report sent")
+
+        date_2w   = date_to - timedelta(days=14)
+        trades_2w = db.get_journal_trades_by_period(str(date_2w), str(date_to))
+        gap       = detect_performance_gap(trades_2w, db)
+        if gap:
+            send_signal_alert(format_gap_alert(gap))
+            logger.warning("Performance gap detected — alert sent")
 
 
 # ── Status display ────────────────────────────────────────────

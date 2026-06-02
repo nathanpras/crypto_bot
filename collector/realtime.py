@@ -118,6 +118,14 @@ async def handle_message(raw: str, db):
         except Exception as e:
             logger.error(f"Callback error for {callback.__name__}: {e}")
 
+    # Phase 3: TP/SL reminder check
+    try:
+        from trade_journal.reminder import check_tp_sl_reminders
+        from utils.telegram import send
+        await check_tp_sl_reminders(candle, db, send)
+    except Exception as e:
+        logger.error(f"Reminder check error: {e}")
+
 
 async def connect_and_stream():
     """Main Bybit WebSocket loop with auto-reconnect."""
