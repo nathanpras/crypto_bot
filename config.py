@@ -214,3 +214,45 @@ OPTIONS_SCORING = {
     "mild_bearish":   {"pc_max": 1.3,                    "modifier":  -5},
     "strong_bearish": {"pc_min": 1.3,  "skew_min":  5.0, "modifier": -15},
 }
+
+# ─── Phase 5: CoinGecko Social Map ───────────────────────────
+COINGECKO_MAP = {
+    "BTCUSDT":  "bitcoin",
+    "ETHUSDT":  "ethereum",
+    "SOLUSDT":  "solana",
+    "XRPUSDT":  "ripple",
+    "BNBUSDT":  "binancecoin",
+    "ADAUSDT":  "cardano",
+    "AVAXUSDT": "avalanche-2",
+    "LINKUSDT": "chainlink",
+    "DOTUSDT":  "polkadot",
+    "TONUSDT":  "the-open-network",
+    "ONDOUSDT": "ondo-finance",
+    "ARBUSDT":  "arbitrum",
+    "OPUSDT":   "optimism",
+    "NEARUSDT": "near",
+    "INJUSDT":  "injective-protocol",
+    "SUIUSDT":  "sui",
+    "APTUSDT":  "aptos",
+    "SEIUSDT":  "sei-network",
+    "POLUSDT":  "matic-network",
+}
+
+SOCIAL_SCORING = {
+    "twitter_growth_strong":  {"threshold":  5.0, "modifier":  4},
+    "reddit_growth_strong":   {"threshold": 10.0, "modifier":  2},
+    "github_active":          {"threshold": 50,   "modifier":  2},
+    "twitter_decline":        {"threshold": -5.0, "modifier": -3},
+    "all_declining":          {"modifier": -5},
+}
+
+# ─── Phase 5: Whale Proxy Thresholds ─────────────────────────
+WHALE_SCORING = {
+    "btc_outflow_bullish":  -1000,
+    "btc_inflow_bearish":    1000,
+    "eth_outflow_bullish":  -10000,
+    "eth_inflow_bearish":    10000,
+    "oi_surge_bullish":      20.0,
+    "oi_drop_bearish":      -20.0,
+    "funding_neutral_max":   0.02,
+}

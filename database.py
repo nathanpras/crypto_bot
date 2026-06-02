@@ -245,6 +245,21 @@ CREATE TABLE IF NOT EXISTS options_metrics (
 );
 """
 
+SCHEMA_PHASE5 = """
+CREATE TABLE IF NOT EXISTS social_metrics (
+    symbol              VARCHAR NOT NULL,
+    date                DATE NOT NULL,
+    twitter_followers   BIGINT,
+    twitter_change_30d  DOUBLE,
+    reddit_subscribers  BIGINT,
+    reddit_change_30d   DOUBLE,
+    github_commits_4w   INTEGER,
+    telegram_members    BIGINT,
+    social_score        DOUBLE,
+    PRIMARY KEY (symbol, date)
+);
+"""
+
 
 class Database:
     def __init__(self, path: str = DB_PATH):
@@ -259,6 +274,7 @@ class Database:
         self.conn.execute(SCHEMA_PHASE2)
         self.conn.execute(SCHEMA_PHASE3)
         self.conn.execute(SCHEMA_PHASE4)
+        self.conn.execute(SCHEMA_PHASE5)
 
     # ── Candles ──────────────────────────────────────────────
 
@@ -754,6 +770,74 @@ class Database:
         self.conn.execute(
             "DELETE FROM coin_news WHERE published_at < ?", [cutoff]
         )
+
+    def upsert_social_metrics(self, symbol: str, metrics: dict):
+        from datetime import date
+        self.conn.execute("""
+            INSERT OR REPLACE INTO social_metrics
+                (symbol, date, twitter_followers, twitter_change_30d,
+                 reddit_subscribers, reddit_change_30d,
+                 github_commits_4w, telegram_members, social_score)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, [
+            symbol, date.today(),
+            metrics.get("twitter_followers"),
+            metrics.get("twitter_change_30d"),
+            metrics.get("reddit_subscribers"),
+            metrics.get("reddit_change_30d"),
+            metrics.get("github_commits_4w"),
+            metrics.get("telegram_members"),
+            metrics.get("social_score", 0.0),
+        ])
+
+    def get_latest_social(self, symbol: str):
+        result = self.conn.execute("""
+            SELECT twitter_followers, twitter_change_30d,
+                   reddit_subscribers, reddit_change_30d,
+                   github_commits_4w, social_score, date
+            FROM social_metrics
+            WHERE symbol = ?
+            ORDER BY date DESC LIMIT 1
+        """, [symbol]).fetchone()
+        if result:
+            return {
+                "twitter_followers":  result[0],
+                "twitter_change_30d": result[1],
+                "reddit_subscribers": result[2],
+                "reddit_change_30d":  result[3],
+                "github_commits_4w":  result[4],
+                "social_score":       result[5],
+                "date":               result[6],
+            }
+        return None
+
+    def get_whale_netflow_7d(self, symbol: str):
+        asset = "BTC" if symbol == "BTCUSDT" else "ETH"
+        cutoff = datetime.utcnow() - timedelta(days=7)
+        result = self.conn.execute("""
+            SELECT SUM(exch_netflow)
+            FROM onchain
+            WHERE asset = ? AND date >= ?
+        """, [asset, cutoff.date()]).fetchone()
+        return float(result[0]) if result and result[0] is not None else None
+
+    def get_oi_change_7d(self, symbol: str):
+        cutoff = datetime.utcnow() - timedelta(days=7)
+        result = self.conn.execute("""
+            SELECT
+                FIRST(open_interest) AS oi_start,
+                LAST(open_interest)  AS oi_end,
+                AVG(funding_rate)    AS avg_funding
+            FROM futures_metrics
+            WHERE symbol = ? AND timestamp >= ?
+        """, [symbol, cutoff]).fetchone()
+        if result and result[0] and result[1] and result[0] > 0:
+            oi_change_pct = (result[1] - result[0]) / result[0] * 100
+            return {
+                "oi_change_pct": round(oi_change_pct, 2),
+                "avg_funding":   round(float(result[2] or 0), 5),
+            }
+        return None
 
 
 # Singleton
