@@ -334,9 +334,10 @@ def main():
             collect_all_tvl()
             logger.info("Collecting token unlock calendar...")
             collect_all_token_unlocks()
-        from collector.social import collect_all_social
-        logger.info("Collecting social metrics (CoinGecko)...")
-        collect_all_social(db)
+        if args.full:
+            from collector.social import collect_all_social
+            logger.info("Collecting social metrics (CoinGecko)...")
+            collect_all_social(db)
 
     elif args.compute_signals:
         from backtesting.harness import compute_historical_signals
