@@ -2,7 +2,7 @@
 """
 Enhanced on-chain data collection for all 19 coins.
 BTC/ETH: CoinMetrics community API (MVRV, exchange netflow)
-All coins: Binance Futures API (OI, funding rate, long/short ratio, liquidations)
+All coins: Bybit Futures API (OI, funding rate, long/short ratio, liquidations)
 """
 import requests
 import time
@@ -13,99 +13,88 @@ from config import COINS, FUTURES_SCORING
 from database import get_db
 
 
-BINANCE_FUTURES_BASE = "https://fapi.binance.com"
+BYBIT_FUTURES_BASE = "https://api.bytick.com/v5/market"
 COINMETRICS_BASE = "https://community-api.coinmetrics.io/v4"
 
 
-# ── Binance Futures Data ──────────────────────────────────────
+# ── Bybit Futures Data ───────────────────────────────────────
 
 def fetch_open_interest(symbol: str) -> dict:
-    """Fetch current OI + 24h history dari Binance Futures."""
+    """Fetch current OI + 24h change dari Bybit Futures."""
     try:
         r = requests.get(
-            f"{BINANCE_FUTURES_BASE}/fapi/v1/openInterest",
-            params={"symbol": symbol}, timeout=10
-        )
-        r.raise_for_status()
-        current_oi = float(r.json()["openInterest"])
-
-        r2 = requests.get(
-            f"{BINANCE_FUTURES_BASE}/futures/data/openInterestHist",
-            params={"symbol": symbol, "period": "1h", "limit": 25},
+            f"{BYBIT_FUTURES_BASE}/open-interest",
+            params={"category": "linear", "symbol": symbol,
+                    "intervalTime": "1h", "limit": 25},
             timeout=10
         )
-        r2.raise_for_status()
-        hist = r2.json()
-        if len(hist) >= 24:
-            oi_24h_ago = float(hist[-24]["sumOpenInterest"])
-            oi_change_pct = (current_oi - oi_24h_ago) / oi_24h_ago * 100
+        items = r.json().get("result", {}).get("list", [])
+        if not items:
+            return {"open_interest": None, "oi_change_24h_pct": 0.0}
+
+        current_oi = float(items[0]["openInterest"])
+        if len(items) >= 24:
+            oi_24h_ago = float(items[23]["openInterest"])
+            oi_change_pct = (
+                (current_oi - oi_24h_ago) / oi_24h_ago * 100
+                if oi_24h_ago > 0 else 0.0
+            )
         else:
             oi_change_pct = 0.0
 
-        return {"open_interest": current_oi, "oi_change_24h_pct": oi_change_pct}
-
+        return {
+            "open_interest":      current_oi,
+            "oi_change_24h_pct":  round(oi_change_pct, 2),
+        }
     except Exception as e:
-        logger.debug(f"OI fetch failed for {symbol}: {e}")
+        logger.debug(f"Bybit OI fetch failed for {symbol}: {e}")
         return {"open_interest": None, "oi_change_24h_pct": 0.0}
 
 
 def fetch_funding_rate(symbol: str) -> float:
-    """Fetch current funding rate dari Binance Futures."""
+    """Fetch current funding rate dari Bybit Futures tickers."""
     try:
         r = requests.get(
-            f"{BINANCE_FUTURES_BASE}/fapi/v1/premiumIndex",
-            params={"symbol": symbol}, timeout=10
+            f"{BYBIT_FUTURES_BASE}/tickers",
+            params={"category": "linear", "symbol": symbol},
+            timeout=10
         )
-        r.raise_for_status()
-        return float(r.json()["lastFundingRate"])
+        items = r.json().get("result", {}).get("list", [])
+        if items:
+            return float(items[0].get("fundingRate", 0) or 0)
+        return 0.0
     except Exception as e:
-        logger.debug(f"Funding rate fetch failed for {symbol}: {e}")
+        logger.debug(f"Bybit funding rate fetch failed for {symbol}: {e}")
         return 0.0
 
 
 def fetch_long_short_ratio(symbol: str) -> float:
-    """Fetch long/short account ratio dari Binance Futures."""
+    """Fetch long/short account ratio dari Bybit Futures."""
     try:
         r = requests.get(
-            f"{BINANCE_FUTURES_BASE}/futures/data/globalLongShortAccountRatio",
-            params={"symbol": symbol, "period": "1h", "limit": 1},
+            f"{BYBIT_FUTURES_BASE}/account-ratio",
+            params={"category": "linear", "symbol": symbol,
+                    "period": "1h", "limit": 1},
             timeout=10
         )
-        r.raise_for_status()
-        data = r.json()
-        if data:
-            return float(data[0]["longShortRatio"])
+        items = r.json().get("result", {}).get("list", [])
+        if items:
+            buy  = float(items[0].get("buyRatio",  0.5) or 0.5)
+            sell = float(items[0].get("sellRatio", 0.5) or 0.5)
+            return round(buy / sell, 3) if sell > 0 else 1.0
         return 1.0
     except Exception as e:
-        logger.debug(f"L/S ratio fetch failed for {symbol}: {e}")
+        logger.debug(f"Bybit L/S ratio fetch failed for {symbol}: {e}")
         return 1.0
 
 
 def fetch_liquidations(symbol: str) -> dict:
-    """Fetch liquidation orders dari Binance Futures (last 50 orders)."""
-    try:
-        r = requests.get(
-            f"{BINANCE_FUTURES_BASE}/fapi/v1/forceOrders",
-            params={"symbol": symbol, "autoCloseType": "LIQUIDATION", "limit": 50},
-            timeout=10
-        )
-        r.raise_for_status()
-        orders = r.json()
-
-        liq_long  = sum(float(o["origQty"]) * float(o["price"])
-                        for o in orders if o.get("side") == "SELL")
-        liq_short = sum(float(o["origQty"]) * float(o["price"])
-                        for o in orders if o.get("side") == "BUY")
-
-        return {"liq_long_24h": liq_long, "liq_short_24h": liq_short}
-
-    except Exception as e:
-        logger.debug(f"Liquidation fetch failed for {symbol}: {e}")
-        return {"liq_long_24h": 0.0, "liq_short_24h": 0.0}
+    """Bybit public API tidak expose liquidation data — return 0 as fallback."""
+    return {"liq_long_24h": 0.0, "liq_short_24h": 0.0}
 
 
 def fetch_all_futures_data(symbol: str) -> dict:
-    """Fetch semua Binance Futures data untuk satu coin."""
+    """Fetch semua Bybit Futures data untuk satu coin."""
     oi_data   = fetch_open_interest(symbol)
     funding   = fetch_funding_rate(symbol)
     ls_ratio  = fetch_long_short_ratio(symbol)
@@ -160,7 +149,7 @@ def fetch_coinmetrics(asset: str) -> dict:
 
 def score_from_futures_data(data: dict) -> float:
     """
-    Hitung on-chain score 0-100 dari Binance Futures data.
+    Hitung on-chain score 0-100 dari Bybit Futures data.
     Dipanggil untuk 17 altcoin non-BTC/ETH.
     """
     cfg = FUTURES_SCORING
@@ -281,7 +270,7 @@ def calc_onchain_score_enhanced(symbol: str, db=None) -> float:
 def collect_all_onchain(full: bool = False):
     """
     Fetch dan simpan data on-chain untuk semua coin.
-    full=False: hanya Binance Futures (cepat, ~30 detik)
+    full=False: hanya Bybit Futures (cepat, ~30 detik)
     full=True:  Futures + CoinMetrics (semua, ~2 menit)
     """
     db = get_db()
