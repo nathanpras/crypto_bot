@@ -11,7 +11,9 @@ import ta as _ta
 import numpy as np
 from loguru import logger
 
-from config import COINS, SIGNAL_WEIGHTS, SIGNAL_THRESHOLD, SIGNAL_STRONG, FILTERS
+from datetime import datetime
+from config import COINS, SIGNAL_WEIGHTS, SIGNAL_THRESHOLD, SIGNAL_STRONG, FILTERS, KILL_ZONES_UTC
+from config import REGIME_WEIGHTS, KILL_ZONE_BONUS
 from database import get_db
 from collector.onchain_enhanced import calc_onchain_score_enhanced
 from collector.narrative import get_sector_modifier
@@ -24,6 +26,26 @@ from collector.whale import get_whale_modifier
 
 def score_clamp(val: float) -> float:
     return max(0.0, min(100.0, float(val)))
+
+
+def get_regime_weights(regime: str) -> dict:
+    """Return adaptive signal weights for the given market regime."""
+    return REGIME_WEIGHTS.get(regime, SIGNAL_WEIGHTS)
+
+
+def get_kill_zone_modifier() -> tuple[bool, float]:
+    """
+    Return (in_kill_zone, modifier).
+    Kill zones: London open 07-10 UTC, NY open 13-16 UTC.
+    """
+    now     = datetime.utcnow()
+    now_min = now.hour * 60 + now.minute
+    for (sh, sm, eh, em) in KILL_ZONES_UTC:
+        start = sh * 60 + sm
+        end   = eh * 60 + em
+        if start <= now_min < end:
+            return True, float(KILL_ZONE_BONUS)
+    return False, 0.0
 
 
 # ── Signal 1: Trend Alignment (multi-timeframe) ──────────────
@@ -346,15 +368,18 @@ def score_coin(symbol: str, fear_greed: int = 50,
     s["onchain_score"]   = calc_onchain_score(symbol, db)
     s["sentiment_score"] = calc_sentiment_score(fear_greed, funding_rate)
 
-    # Weighted total — explicit mapping because SIGNAL_WEIGHTS keys differ from s dict keys
+    # Phase 6: detect regime first → use adaptive weights
+    regime  = detect_regime(df_4h)
+    weights = get_regime_weights(regime)
+
     total = (
-        s["trend_score"]     * SIGNAL_WEIGHTS["trend_alignment"] +
-        s["rsi_score"]       * SIGNAL_WEIGHTS["rsi_momentum"] +
-        s["macd_score"]      * SIGNAL_WEIGHTS["macd_momentum"] +
-        s["volume_score"]    * SIGNAL_WEIGHTS["volume_confirm"] +
-        s["wyckoff_score"]   * SIGNAL_WEIGHTS["wyckoff_phase"] +
-        s["onchain_score"]   * SIGNAL_WEIGHTS["onchain_signal"] +
-        s["sentiment_score"] * SIGNAL_WEIGHTS["sentiment_score"]
+        s["trend_score"]     * weights["trend_alignment"] +
+        s["rsi_score"]       * weights["rsi_momentum"] +
+        s["macd_score"]      * weights["macd_momentum"] +
+        s["volume_score"]    * weights["volume_confirm"] +
+        s["wyckoff_score"]   * weights["wyckoff_phase"] +
+        s["onchain_score"]   * weights["onchain_signal"] +
+        s["sentiment_score"] * weights["sentiment_score"]
     )
 
     # Phase 2 modifiers
@@ -379,6 +404,8 @@ def score_coin(symbol: str, fear_greed: int = 50,
             "unlock_penalty":   unlock_pen,
             "news_modifier":    0.0,
             "options_modifier": 0.0,
+            "kill_zone_active":   False,
+            "kill_zone_modifier": 0.0,
             "blocked_reason":   f"NEWS: {news_check['reason']}",
         }
 
@@ -392,9 +419,12 @@ def score_coin(symbol: str, fear_greed: int = 50,
     whale_mod  = get_whale_modifier(symbol, db)
     total      = score_clamp(total + social_mod + whale_mod)
 
-    regime = detect_regime(df_4h)
-    fired  = total >= SIGNAL_THRESHOLD   # Use final total
-    strong = total >= SIGNAL_STRONG      # Use final total
+    # Phase 6: Kill zone bonus
+    in_kill_zone, kz_mod = get_kill_zone_modifier()
+    total  = score_clamp(total + kz_mod)
+
+    fired  = total >= SIGNAL_THRESHOLD
+    strong = total >= SIGNAL_STRONG
 
     result = {
         "symbol":           symbol,
@@ -412,6 +442,8 @@ def score_coin(symbol: str, fear_greed: int = 50,
         "options_modifier": options_mod,
         "social_modifier":  social_mod,
         "whale_modifier":   whale_mod,
+        "kill_zone_active":   in_kill_zone,
+        "kill_zone_modifier": kz_mod,
     }
 
     # Store to DB
