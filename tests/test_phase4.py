@@ -33,3 +33,34 @@ def test_upsert_and_get_options_metrics(db):
     m = db.get_latest_options("BTCUSDT")
     assert m is not None
     assert abs(m["put_call_ratio"] - 1.4) < 0.001
+
+
+from collector.news import (
+    detect_critical_keywords,
+    calc_news_modifier,
+    get_news_gate,
+)
+
+
+def test_critical_keyword_triggers_block():
+    assert detect_critical_keywords("Solana network hacked, $50M stolen") is True
+    assert detect_critical_keywords("Solana price reaches new ATH") is False
+
+
+def test_news_modifier_bearish(db):
+    for i in range(3):
+        db.upsert_coin_news("ETHUSDT", [{
+            "id": f"news-{i}", "title": f"ETH bad news {i}",
+            "sentiment": "bearish", "is_critical": False,
+            "votes_pos": 0, "votes_neg": 5, "source": "test",
+            "published_at": datetime.utcnow() - timedelta(hours=1),
+        }])
+    mod = calc_news_modifier("ETHUSDT", db)
+    assert mod <= -8
+
+
+def test_engine_blocked_by_news_returns_zero(db):
+    db.set_news_block("ARBUSDT", "Arbitrum bridge exploit")
+    gate = get_news_gate("ARBUSDT", db)
+    assert gate["blocked"] is True
+    assert gate["modifier"] == 0
