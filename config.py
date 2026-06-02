@@ -258,6 +258,50 @@ CRITICAL_KEYWORDS = [
 NEWS_BLOCK_HOURS       = 6
 NEWS_POLL_INTERVAL_SEC = 300   # 5 menit
 
+# ─── Phase 4: News Sentiment Keywords ────────────────────────
+BULLISH_KEYWORDS = [
+    "rally", "surge", "breakout", "all-time high", "ath", "bullish",
+    "adoption", "partnership", "launch", "upgrade", "integration",
+    "institutional", "etf", "milestone", "record", "soars", "jumps",
+    "rises", "gains", "approved", "listing", "major",
+]
+
+BEARISH_KEYWORDS = [
+    "crash", "plunge", "drop", "fall", "dump", "bearish", "ban",
+    "lawsuit", "regulation", "fine", "penalty", "warning", "concern",
+    "hack", "exploit", "stolen", "vulnerability", "breach", "collapse",
+    "loses", "falls", "declines", "drops", "sinks", "tanks",
+]
+
+COIN_NAME_MAP = {
+    "BTCUSDT":  ["bitcoin", "btc"],
+    "ETHUSDT":  ["ethereum", "eth", "ether"],
+    "SOLUSDT":  ["solana", "sol"],
+    "XRPUSDT":  ["ripple", "xrp"],
+    "BNBUSDT":  ["binance coin", "bnb"],
+    "ADAUSDT":  ["cardano", "ada"],
+    "AVAXUSDT": ["avalanche", "avax"],
+    "LINKUSDT": ["chainlink", "link"],
+    "DOTUSDT":  ["polkadot", "dot"],
+    "TONUSDT":  ["toncoin", "ton"],
+    "ONDOUSDT": ["ondo"],
+    "ARBUSDT":  ["arbitrum", "arb"],
+    "OPUSDT":   ["optimism"],
+    "NEARUSDT": ["near protocol", "near"],
+    "INJUSDT":  ["injective", "inj"],
+    "SUIUSDT":  ["sui"],
+    "APTUSDT":  ["aptos", "apt"],
+    "SEIUSDT":  ["sei"],
+    "POLUSDT":  ["polygon", "pol", "matic"],
+}
+
+RSS_FEEDS = [
+    "https://www.coindesk.com/arc/outboundfeeds/rss/",
+    "https://cointelegraph.com/rss",
+    "https://decrypt.co/feed",
+    "https://cryptonews.com/news/feed/",
+]
+
 # ─── Phase 4: Options Flow Scoring ───────────────────────────────────────────
 OPTIONS_SCORING = {
     "strong_bullish": {"pc_max": 0.7,  "skew_max": -3.0, "modifier":  10},
