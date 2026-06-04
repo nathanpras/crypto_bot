@@ -89,8 +89,54 @@ def fetch_long_short_ratio(symbol: str) -> float:
 
 
 def fetch_liquidations(symbol: str) -> dict:
-    """Bybit public API tidak expose liquidation data — return 0 as fallback."""
-    return {"liq_long_24h": 0.0, "liq_short_24h": 0.0}
+    """
+    Estimate liquidation pressure from OI delta + price movement.
+    Bybit has no public liquidation endpoint, so we use a proxy:
+    - OI drops sharply + price drops = long liquidations
+    - OI drops sharply + price rises = short liquidations
+    Uses last 2 OI data points and latest ticker price.
+    """
+    try:
+        # Get last 2 hours of OI to measure delta
+        r_oi = requests.get(
+            f"{BYBIT_FUTURES_BASE}/open-interest",
+            params={"category": "linear", "symbol": symbol,
+                    "intervalTime": "1h", "limit": 2},
+            timeout=10
+        )
+        oi_items = r_oi.json().get("result", {}).get("list", [])
+
+        # Get last price from ticker
+        r_tick = requests.get(
+            f"{BYBIT_FUTURES_BASE}/tickers",
+            params={"category": "linear", "symbol": symbol},
+            timeout=10
+        )
+        tick_items = r_tick.json().get("result", {}).get("list", [])
+
+        if len(oi_items) < 2 or not tick_items:
+            return {"liq_long_24h": 0.0, "liq_short_24h": 0.0}
+
+        oi_now  = float(oi_items[0]["openInterest"])
+        oi_prev = float(oi_items[1]["openInterest"])
+        price_chg = float(tick_items[0].get("price24hPcnt", 0) or 0)
+
+        oi_delta_pct = (oi_now - oi_prev) / oi_prev * 100 if oi_prev > 0 else 0.0
+        oi_usd       = oi_now * float(tick_items[0].get("lastPrice", 0) or 0)
+
+        # Large OI drop (>2%) = forced liquidations happening
+        liq_long, liq_short = 0.0, 0.0
+        if oi_delta_pct < -2.0:
+            if price_chg < 0:
+                liq_long  = abs(oi_delta_pct) / 100 * oi_usd  # price fell + OI down = longs liquidated
+            else:
+                liq_short = abs(oi_delta_pct) / 100 * oi_usd  # price rose + OI down = shorts liquidated
+
+        return {"liq_long_24h": liq_long, "liq_short_24h": liq_short}
+
+    except Exception as e:
+        logger.debug(f"Liquidation estimate failed for {symbol}: {e}")
+        return {"liq_long_24h": 0.0, "liq_short_24h": 0.0}
 
 
 def fetch_all_futures_data(symbol: str) -> dict:

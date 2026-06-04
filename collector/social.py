@@ -82,9 +82,25 @@ def collect_all_social(db) -> None:
             time.sleep(2)
             continue
 
-        prev    = db.get_latest_social(symbol)
-        prev_tw = prev["twitter_followers"] if prev else data["twitter_followers"]
-        prev_rd = prev["reddit_subscribers"] if prev else data["reddit_subscribers"]
+        # Get value from 30 days ago for proper 30d change calculation
+        from datetime import date, timedelta
+        date_30d_ago = str(date.today() - timedelta(days=30))
+        prev_30d = db.conn.execute("""
+            SELECT twitter_followers, reddit_subscribers
+            FROM social_metrics WHERE symbol = ? AND date <= ?
+            ORDER BY date DESC LIMIT 1
+        """, [symbol, date_30d_ago]).fetchone()
+
+        # Fall back to most recent if no 30d data
+        if not prev_30d:
+            prev_row = db.conn.execute("""
+                SELECT twitter_followers, reddit_subscribers
+                FROM social_metrics WHERE symbol = ? ORDER BY date DESC LIMIT 1
+            """, [symbol]).fetchone()
+            prev_30d = prev_row
+
+        prev_tw = prev_30d[0] if prev_30d and prev_30d[0] else data["twitter_followers"]
+        prev_rd = prev_30d[1] if prev_30d and prev_30d[1] else data["reddit_subscribers"]
 
         tw_change = ((data["twitter_followers"] - prev_tw) / prev_tw * 100
                      if prev_tw and prev_tw > 0 else 0.0)
@@ -92,12 +108,11 @@ def collect_all_social(db) -> None:
                      if prev_rd and prev_rd > 0 else 0.0)
 
         score = calc_social_score(tw_change, rd_change, data["github_commits_4w"])
-
         db.upsert_social_metrics(symbol, {
             **data,
             "twitter_change_30d": round(tw_change, 2),
             "reddit_change_30d":  round(rd_change, 2),
             "social_score":       score,
         })
-        logger.info(f"Social {symbol}: tw={tw_change:+.1f}% gh={data['github_commits_4w']} score={score:+.1f}")
+        logger.info(f"Social {symbol}: tw_chg={tw_change:+.1f}% gh={data['github_commits_4w']} score={score:+.1f}")
         time.sleep(2)

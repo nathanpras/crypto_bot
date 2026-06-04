@@ -311,15 +311,32 @@ def calc_sentiment_score(fear_greed: int, funding_rate: float = 0) -> float:
 # ── Regime Detection ──────────────────────────────────────────
 
 def detect_regime(df_4h: pd.DataFrame) -> str:
-    """Classify market regime using ADX."""
-    if df_4h.empty or len(df_4h) < 30:
-        return "UNKNOWN"
+    """Classify market regime using ADX and ATR volatility."""
+    if df_4h.empty or len(df_4h) < 50:
+        return "TRANSITIONING"
+
+    close = df_4h["close"]
+    high  = df_4h["high"]
+    low   = df_4h["low"]
+
+    # ATR for volatility detection — check VOLATILE before directional regimes
+    atr_series = _ta.volatility.AverageTrueRange(high, low, close, window=14).average_true_range()
+    if not atr_series.empty and len(atr_series.dropna()) > 20:
+        atr_now  = atr_series.iloc[-1]
+        atr_avg  = atr_series.iloc[-20:].mean()
+        if atr_avg > 0 and atr_now > atr_avg * 2.5:
+            # Check ADX — no clear direction needed for VOLATILE
+            adx_series = _ta.trend.ADXIndicator(high, low, close, window=14).adx()
+            if not adx_series.empty:
+                adx = adx_series.iloc[-1]
+                if not pd.isna(adx) and adx < FILTERS["adx_trending"]:  # ADX < 25
+                    return "VOLATILE"
 
     adx_ind = _ta.trend.ADXIndicator(df_4h["high"], df_4h["low"], df_4h["close"], window=14)
     adx = adx_ind.adx().iloc[-1]
 
     if pd.isna(adx):
-        return "UNKNOWN"
+        return "TRANSITIONING"
 
     if adx > FILTERS["adx_trending"]:
         dmp = adx_ind.adx_pos().iloc[-1]

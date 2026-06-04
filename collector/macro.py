@@ -4,7 +4,9 @@
 
 import requests
 import os
+import json
 from datetime import datetime, date
+from pathlib import Path
 from loguru import logger
 from dotenv import load_dotenv
 
@@ -120,6 +122,30 @@ def fetch_global_m2() -> dict:
         return {"status": "error", "trend": "unknown", "f1_pass": None}
 
 
+_F1_CACHE_PATH = Path("data/f1_cache.json")
+
+
+def _save_f1_cache(result: dict):
+    """Save F1 gate result to disk for use when API is unavailable."""
+    try:
+        _F1_CACHE_PATH.parent.mkdir(exist_ok=True)
+        with open(_F1_CACHE_PATH, "w") as f:
+            json.dump(result, f)
+    except Exception:
+        pass
+
+
+def _load_f1_cache() -> dict | None:
+    """Load last known F1 gate result."""
+    try:
+        if _F1_CACHE_PATH.exists():
+            with open(_F1_CACHE_PATH) as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return None
+
+
 def evaluate_f1_gate(macro_data: dict) -> dict:
     """
     F1: Macro Gate — is global liquidity expanding?
@@ -132,8 +158,27 @@ def evaluate_f1_gate(macro_data: dict) -> dict:
     # F1 PASS conditions:
     # 1. M2 not contracting (most important)
     # 2. Fear & Greed not at extreme greed (overbought market)
-    m2_ok  = m2.get("f1_pass", True)   # Default to pass if no key
+
+    m2_status = m2.get("status", "error")
     fng_ok = fng.get("value", 50) < 80  # Not extreme greed
+
+    if m2_status == "ok":
+        # Successful fetch — use result and save to cache
+        m2_ok = m2.get("f1_pass", False)
+        cache_entry = {"f1_pass": m2_ok, "m2_trend": m2.get("trend", "unknown"),
+                       "cached_at": datetime.utcnow().isoformat()}
+        _save_f1_cache(cache_entry)
+    else:
+        # Fetch failed — load from cache
+        cached = _load_f1_cache()
+        if cached is not None:
+            m2_ok = cached.get("f1_pass", False)
+            logger.warning(f"FRED API unavailable — using cached F1 result "
+                           f"(cached_at={cached.get('cached_at', 'unknown')})")
+        else:
+            # No cache at all — conservative FAIL
+            m2_ok = False
+            logger.warning("FRED API unavailable, no cache — conservative FAIL for F1 gate")
 
     passed = m2_ok and fng_ok
 
