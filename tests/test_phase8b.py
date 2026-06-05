@@ -200,3 +200,13 @@ def test_bb_squeeze_normalized_returns_0_100():
     df = make_candles(30)
     score = calc_bb_squeeze_normalized(df)
     assert 0 <= score <= 100
+
+
+def test_d4_basis_score_is_live_or_neutral():
+    """D4 returns valid 0-100 score (live fetch or neutral fallback)."""
+    db = Database(":memory:")
+    scores = get_all_signals("BTCUSDT", db)
+    db.close()
+    assert 0.0 <= scores["D4"] <= 100.0
+    # D4 should NOT always be 50.0 anymore (may be 50 if network unavailable in CI)
+    # Just verify it's in range

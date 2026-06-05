@@ -132,8 +132,47 @@ def _options_score(symbol: str, db) -> float:
 
 
 def _futures_basis_score(symbol: str, db) -> float:
-    """D4: Futures basis stub — returns 50 until basis data is populated."""
-    return 50.0
+    """D4: Futures basis (contango/backwardation). Positive basis = bearish, negative = bullish."""
+    import requests
+    try:
+        # Get perp mark price
+        r_perp = requests.get(
+            "https://api.bytick.com/v5/market/tickers",
+            params={"category": "linear", "symbol": symbol},
+            timeout=8,
+        )
+        perp_items = r_perp.json().get("result", {}).get("list", [])
+        if not perp_items:
+            return 50.0
+        mark_price = float(perp_items[0].get("markPrice") or perp_items[0].get("lastPrice", 0))
+
+        # Get spot last price
+        spot_symbol = symbol.replace("USDT", "") + "USDT"  # Same for most, but spot category
+        r_spot = requests.get(
+            "https://api.bytick.com/v5/market/tickers",
+            params={"category": "spot", "symbol": spot_symbol},
+            timeout=8,
+        )
+        spot_items = r_spot.json().get("result", {}).get("list", [])
+        if not spot_items:
+            return 50.0
+        spot_price = float(spot_items[0].get("lastPrice", 0))
+
+        if spot_price <= 0 or mark_price <= 0:
+            return 50.0
+
+        basis_pct = (mark_price - spot_price) / spot_price * 100
+
+        # Score: negative basis (backwardation) = bullish → high score
+        # Strong contango (>0.5%) → bearish → low score
+        if basis_pct < -0.3:    return 85.0   # Strong backwardation = bullish
+        elif basis_pct < -0.1:  return 68.0
+        elif basis_pct < 0.1:   return 52.0   # Near-parity = neutral
+        elif basis_pct < 0.3:   return 38.0
+        elif basis_pct < 0.5:   return 28.0
+        else:                    return 15.0   # High contango = bearish
+    except Exception:
+        return 50.0
 
 
 def _stablecoin_score(db) -> float:
