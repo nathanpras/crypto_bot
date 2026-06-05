@@ -65,16 +65,15 @@ def objective(trial, splits: dict, db) -> float:
             if len(scores) < 30:
                 continue
 
-            price_df = db.get_candles(symbol, "4h")
+            price_df = db.get_candles(symbol, "4h", limit=5000)
+            price_df["timestamp"] = pd.to_datetime(price_df["timestamp"])
             price_df = price_df[
-                (price_df["timestamp"] >= splits["train_start"]) &
-                (price_df["timestamp"] <= splits["train_end"])
+                (price_df["timestamp"] >= pd.Timestamp(splits["train_start"])) &
+                (price_df["timestamp"] <= pd.Timestamp(splits["train_end"]))
             ].reset_index(drop=True)
 
             if price_df.empty or len(price_df) < 50:
                 continue
-
-            price_df["timestamp"] = pd.to_datetime(price_df["timestamp"])
             merged = price_df.set_index("timestamp").join(
                 scores.rename("score"), how="left"
             ).fillna(50).reset_index()
@@ -197,3 +196,154 @@ def run_optimization(n_trials: int = 300):
     print(f"Deploy: {'YES ✅' if deploy else 'NO ⚠️'}")
     print(f"Reason: {reason}")
     print(f"{'═'*50}\n")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Phase 8: Per-regime Optuna optimizer
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _compute_fitness(weights: dict, historical_signals: list, labels: list) -> float:
+    """
+    Compute composite fitness for a weight dict given historical signal dicts and returns.
+
+    Args:
+        weights: {signal_id: float} — must sum to 1.0
+        historical_signals: list of {signal_id: float 0-100} — one per period
+        labels: list of floats — % return for next period (positive = good)
+
+    Returns:
+        Fitness score in [0, 1].
+        Fitness = 0.40*sharpe_norm + 0.25*win_rate + 0.20*(1-max_dd) + 0.15*pf_norm
+    """
+    n = min(len(historical_signals), len(labels))
+    if n == 0:
+        return 0.0
+
+    # Step 1-2: compute composite and buy signals
+    composites = []
+    for i in range(n):
+        sig_dict = historical_signals[i]
+        composite = sum(weights.get(sid, 0.0) * sig_dict.get(sid, 50.0) for sid in weights)
+        composites.append(composite)
+
+    signal_flags = [1 if c > 60 else 0 for c in composites]
+
+    # Step 3: realized returns (only when signaled)
+    realized = [labels[i] * signal_flags[i] for i in range(n)]
+
+    # Step 4: Sharpe (annualized with sqrt(365*6) ≈ sqrt(2190))
+    active = [r for r in realized if r != 0]
+    if len(active) < 2:
+        sharpe = 0.0
+    else:
+        arr = np.array(active, dtype=float)
+        std = arr.std()
+        sharpe = (arr.mean() / std) * (2190 ** 0.5) if std > 0 else 0.0
+
+    # Step 5: Win rate
+    non_zero = [r for r in realized if r != 0]
+    if non_zero:
+        win_rate = sum(1 for r in non_zero if r > 0) / len(non_zero)
+    else:
+        win_rate = 0.0
+
+    # Step 6: Max drawdown from cumulative equity curve
+    equity = 0.0
+    peak = 0.0
+    max_dd = 0.0
+    for r in realized:
+        equity += r
+        if equity > peak:
+            peak = equity
+        dd = (peak - equity) / max(abs(peak), 1e-9)
+        if dd > max_dd:
+            max_dd = dd
+    max_dd = min(max_dd, 1.0)
+
+    # Step 7: Profit factor
+    gains = sum(r for r in realized if r > 0)
+    losses = abs(sum(r for r in realized if r < 0))
+    profit_factor = gains / max(losses, 0.001)
+
+    # Normalize components to [0, 1]
+    sharpe_norm = min(max(sharpe / 3.0, 0.0), 1.0)
+    pf_norm = min(profit_factor / 3.0, 1.0)
+
+    fitness = (
+        0.40 * sharpe_norm
+        + 0.25 * win_rate
+        + 0.20 * (1.0 - max_dd)
+        + 0.15 * pf_norm
+    )
+    return float(min(max(fitness, 0.0), 1.0))
+
+
+def optimize_weights_for_regime(
+    regime: str,
+    historical_signals: list,
+    labels: list,
+    n_trials: int = 300,
+) -> dict:
+    """
+    Run Optuna optimization to find best signal weights for a given market regime.
+
+    Args:
+        regime: One of "bull", "bear", "sideways", "volatile", "recovery"
+        historical_signals: list of {signal_id: float} — one dict per candle period
+        labels: list of floats — % return for the next period
+        n_trials: Number of Optuna trials (default 300)
+
+    Returns:
+        Normalized weight dict {signal_id: float} summing to 1.0
+    """
+    from signals.registry import get_signal_ids
+    from config import DEFAULT_WEIGHTS_PHASE8
+
+    signal_ids = get_signal_ids()
+    default_weights = DEFAULT_WEIGHTS_PHASE8.get(regime, DEFAULT_WEIGHTS_PHASE8.get("bull", {}))
+
+    def _objective(trial):
+        raw = {sid: trial.suggest_float(sid, 0.001, 0.3) for sid in signal_ids}
+        total = sum(raw.values())
+        weights = {sid: v / total for sid, v in raw.items()}
+        return _compute_fitness(weights, historical_signals, labels)
+
+    study = optuna.create_study(
+        direction="maximize",
+        sampler=optuna.samplers.TPESampler(seed=42),
+    )
+
+    # Seed with default weights as the first trial
+    seed_params = {sid: float(default_weights.get(sid, 0.01)) for sid in signal_ids}
+    study.enqueue_trial(seed_params)
+
+    study.optimize(_objective, n_trials=n_trials, show_progress_bar=False)
+
+    best = study.best_params
+    total = sum(best.values())
+    return {sid: v / total for sid, v in best.items()}
+
+
+def optimize_all_regimes(
+    historical_data_by_regime: dict,
+    n_trials: int = 300,
+) -> dict:
+    """
+    Optimize signal weights for all 5 market regimes.
+
+    Args:
+        historical_data_by_regime: {regime: (historical_signals, labels)}
+            where historical_signals is list of {signal_id: float}
+            and labels is list of floats (% returns)
+        n_trials: Number of Optuna trials per regime (default 300)
+
+    Returns:
+        {regime: {signal_id: float}} — normalized weights for each regime
+    """
+    results = {}
+    for regime, (signals, labels) in historical_data_by_regime.items():
+        logger.info(f"Optimizing weights for regime: {regime} ({n_trials} trials)...")
+        weights = optimize_weights_for_regime(regime, signals, labels, n_trials=n_trials)
+        results[regime] = weights
+        logger.info(f"  Done — regime={regime}, top signal: {max(weights, key=weights.get)}")
+    return results
