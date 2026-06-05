@@ -143,3 +143,28 @@ def test_save_and_get_optimized_weights(db):
     assert loaded is not None
     assert abs(loaded.get("T1", 0) - 0.12) < 1e-6
     assert abs(sum(loaded.values()) - 1.0) < 1e-4
+
+def test_get_onchain_real_history(db):
+    from datetime import date, timedelta
+    for i in range(5):
+        db.upsert_onchain_real("BTC", {
+            "date": date.today() - timedelta(days=i),
+            "active_addr": 900_000 + i * 1000,
+            "tx_count": 300_000 + i * 500,
+            "exchange_inflow": 1000.0,
+            "exchange_outflow": 1000.0,
+            "nvt_ratio": 40.0,
+        })
+    rows = db.get_onchain_real_history("BTC", days=5)
+    assert len(rows) == 5
+    assert all("tx_count" in r for r in rows)
+
+def test_get_funding_30d_ma(db):
+    from datetime import datetime, timedelta
+    for i in range(10):
+        db.upsert_funding_history("BTCUSDT", {
+            "timestamp": datetime.utcnow() - timedelta(hours=i * 8),
+            "funding_rate": 0.0003,
+        })
+    ma = db.get_funding_30d_ma("BTCUSDT")
+    assert abs(ma - 0.0003) < 1e-6
