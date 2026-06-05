@@ -466,21 +466,21 @@ def test_dex_cex_ratio_returns_float():
 
 def test_mvrv_score_undervalued_bullish(db):
     db.conn.execute(
-        "INSERT OR REPLACE INTO onchain (asset, date, mvrv_ratio) VALUES ('BTC', CURRENT_DATE, 0.85)"
+        "INSERT OR REPLACE INTO onchain (asset, date, mvrv_ratio) VALUES ('btc', CURRENT_DATE, 0.85)"
     )
     score = get_mvrv_score("BTCUSDT", db)
     assert score > 70, "MVRV < 1 = undervalued = bullish"
 
 def test_mvrv_score_overvalued_bearish(db):
     db.conn.execute(
-        "INSERT OR REPLACE INTO onchain (asset, date, mvrv_ratio) VALUES ('BTC', CURRENT_DATE, 3.5)"
+        "INSERT OR REPLACE INTO onchain (asset, date, mvrv_ratio) VALUES ('btc', CURRENT_DATE, 3.5)"
     )
     score = get_mvrv_score("BTCUSDT", db)
     assert score < 20, "MVRV > 3 = overvalued = bearish"
 
 def test_netflow_score_outflow_bullish(db):
     db.conn.execute(
-        "INSERT OR REPLACE INTO onchain (asset, date, exch_netflow) VALUES ('BTC', CURRENT_DATE, -5500)"
+        "INSERT OR REPLACE INTO onchain (asset, date, exch_netflow) VALUES ('btc', CURRENT_DATE, -5500)"
     )
     score = get_netflow_score("BTCUSDT", db)
     assert score > 70, "Strong outflow (negative netflow) = bullish"

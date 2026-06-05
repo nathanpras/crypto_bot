@@ -354,7 +354,7 @@ def collect_all_onchain(full: bool = False):
 
 def get_mvrv_score(symbol: str, db) -> float:
     """O1: MVRV ratio score 0-100 from onchain table."""
-    asset_map = {"BTCUSDT": "BTC", "ETHUSDT": "ETH"}
+    asset_map = {"BTCUSDT": "btc", "ETHUSDT": "eth"}
     asset = asset_map.get(symbol)
     if not asset:
         return 50.0
@@ -379,7 +379,7 @@ def get_mvrv_score(symbol: str, db) -> float:
 
 def get_netflow_score(symbol: str, db) -> float:
     """O2: Exchange netflow score 0-100. Negative netflow (outflow) = bullish."""
-    asset_map = {"BTCUSDT": "BTC", "ETHUSDT": "ETH"}
+    asset_map = {"BTCUSDT": "btc", "ETHUSDT": "eth"}
     asset = asset_map.get(symbol)
     if not asset:
         return 50.0
