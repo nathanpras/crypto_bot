@@ -18,6 +18,12 @@ from pathlib import Path
 from loguru import logger
 from dotenv import load_dotenv
 
+# ── UTF-8 stdout on Windows (prevents UnicodeEncodeError for emoji/box chars)
+if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
+    import io
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
+
 # ── Setup paths ───────────────────────────────────────────────
 sys.path.insert(0, str(Path(__file__).parent))
 load_dotenv()
