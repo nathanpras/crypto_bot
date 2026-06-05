@@ -22,6 +22,12 @@ from collector.news import get_news_gate
 from collector.options import get_options_modifier
 from collector.social import get_social_modifier
 from collector.whale import get_whale_modifier
+from signals.technical import (
+    calc_vwap_score, calc_volume_delta_score,
+    calc_bb_squeeze_score, calc_correlation_filter,
+    calc_trend_score, calc_rsi_score, calc_macd_score,
+    calc_volume_score, calc_wyckoff_score,
+)
 
 
 def score_clamp(val: float) -> float:
@@ -48,229 +54,9 @@ def get_kill_zone_modifier() -> tuple[bool, float]:
     return False, 0.0
 
 
-# ── Signal 1: Trend Alignment (multi-timeframe) ──────────────
-
-def calc_trend_score(df_4h: pd.DataFrame, df_1d: pd.DataFrame) -> float:
-    """
-    Score based on how many timeframes agree on direction.
-    4H + 1D both bullish = 100. Mixed = 50. Both bearish = 0.
-    """
-    if df_4h.empty or len(df_4h) < 210:
-        return 50.0
-
-    # Calculate EMAs
-    close_4h = df_4h["close"]
-    ema20  = _ta.trend.EMAIndicator(close_4h, window=20).ema_indicator().iloc[-1]
-    ema50  = _ta.trend.EMAIndicator(close_4h, window=50).ema_indicator().iloc[-1]
-    ema200 = _ta.trend.EMAIndicator(close_4h, window=200).ema_indicator().iloc[-1]
-    price  = close_4h.iloc[-1]
-
-    score = 50.0
-
-    # EMA alignment (bullish: price > ema20 > ema50 > ema200)
-    if price > ema20:    score += 12
-    if ema20 > ema50:    score += 12
-    if ema50 > ema200:   score += 13
-    if price < ema20:    score -= 12
-    if ema20 < ema50:    score -= 12
-    if ema50 < ema200:   score -= 13
-
-    # Daily timeframe confirmation
-    if not df_1d.empty and len(df_1d) >= 50:
-        close_1d = df_1d["close"]
-        ema50_1d  = _ta.trend.EMAIndicator(close_1d, window=50).ema_indicator().iloc[-1]
-        if close_1d.iloc[-1] > ema50_1d:  score += 13
-        else:                              score -= 13
-
-    return score_clamp(score)
-
-
-# ── Signal 2: RSI Momentum ────────────────────────────────────
-
-def calc_rsi_score(df_4h: pd.DataFrame) -> float:
-    """
-    RSI 14 on 4H. Score based on:
-    - Oversold (< 35) = high bullish score
-    - Overbought (> 70) = low score (avoid chasing)
-    - Divergence detection bonus
-    """
-    if df_4h.empty or len(df_4h) < 20:
-        return 50.0
-
-    close = df_4h["close"]
-    rsi   = _ta.momentum.RSIIndicator(close, window=14).rsi()
-    cur   = rsi.iloc[-1]
-    prev  = rsi.iloc[-5:].mean()
-
-    if pd.isna(cur):
-        return 50.0
-
-    # Base score from RSI level
-    if cur < 30:      base = 85
-    elif cur < 40:    base = 72
-    elif cur < 50:    base = 60
-    elif cur < 60:    base = 50
-    elif cur < 70:    base = 38
-    else:             base = 20  # Overbought — avoid
-
-    # Momentum bonus: RSI rising from oversold
-    momentum = cur - prev
-    if momentum > 3 and cur < 50:   base = min(base + 10, 95)
-    if momentum < -3 and cur > 50:  base = max(base - 10, 10)
-
-    # Bullish divergence: price lower but RSI higher
-    if len(close) >= 14:
-        price_trend = close.iloc[-1] - close.iloc[-14]
-        rsi_trend   = cur - rsi.iloc[-14]
-        if price_trend < 0 and rsi_trend > 2:
-            base = min(base + 12, 95)  # Bullish divergence bonus
-
-    return score_clamp(base)
-
-
-# ── Signal 3: MACD Momentum ───────────────────────────────────
-
-def calc_macd_score(df_4h: pd.DataFrame) -> float:
-    """MACD histogram direction and zero-line cross."""
-    if df_4h.empty or len(df_4h) < 40:
-        return 50.0
-
-    close = df_4h["close"]
-    macd_ind = _ta.trend.MACD(close, window_slow=26, window_fast=12, window_sign=9)
-    hist      = macd_ind.macd_diff()
-    macd_line = macd_ind.macd()
-    sig_line  = macd_ind.macd_signal()
-
-    if hist is None or hist.dropna().empty:
-        return 50.0
-
-    cur_hist  = hist.iloc[-1]
-    prev_hist = hist.iloc[-2] if len(hist) > 1 else 0
-
-    score = 50.0
-
-    # Histogram direction
-    if cur_hist > 0:                             score += 20
-    if cur_hist > 0 and cur_hist > prev_hist:    score += 15  # Expanding bullish
-    if cur_hist < 0:                             score -= 20
-    if cur_hist < 0 and cur_hist < prev_hist:    score -= 15  # Expanding bearish
-
-    # MACD line vs signal cross
-    if macd_line is not None and sig_line is not None:
-        cur_macd  = macd_line.iloc[-1]
-        cur_sig   = sig_line.iloc[-1]
-        prev_macd = macd_line.iloc[-2] if len(macd_line) > 1 else cur_macd
-        prev_sig  = sig_line.iloc[-2]  if len(sig_line)  > 1 else cur_sig
-
-        # Bullish cross (MACD crosses above signal)
-        if cur_macd > cur_sig and prev_macd <= prev_sig:
-            score += 15
-
-    return score_clamp(score)
-
-
-# ── Signal 4: Volume Confirmation ────────────────────────────
-
-def calc_volume_score(df_4h: pd.DataFrame) -> float:
-    """
-    Volume vs 20-period SMA.
-    High volume on up candles, low volume on down = bullish.
-    High volume on down candles = bearish.
-    """
-    if df_4h.empty or len(df_4h) < 25:
-        return 50.0
-
-    vol       = df_4h["volume"]
-    close     = df_4h["close"]
-    vol_sma   = vol.rolling(20).mean()
-
-    cur_vol   = vol.iloc[-1]
-    avg_vol   = vol_sma.iloc[-1]
-    vol_ratio = cur_vol / avg_vol if avg_vol > 0 else 1.0
-    is_up     = close.iloc[-1] > close.iloc[-2]
-
-    # Recent 5 candles: net buy pressure
-    up_vol   = sum(vol.iloc[-5+i] for i in range(5) if close.iloc[-5+i] > close.iloc[-6+i])
-    down_vol = sum(vol.iloc[-5+i] for i in range(5) if close.iloc[-5+i] <= close.iloc[-6+i])
-    total_vol = up_vol + down_vol
-    buy_pressure = up_vol / total_vol if total_vol > 0 else 0.5
-
-    score = buy_pressure * 100  # 0–100 based on buy pressure
-
-    # Volume ratio bonus
-    if is_up and vol_ratio > 1.5:     score = min(score + 15, 95)
-    if not is_up and vol_ratio > 1.5: score = max(score - 15, 5)
-    if vol_ratio < 0.5:               score = 50  # Low volume = inconclusive
-
-    return score_clamp(score)
-
-
-# ── Signal 5: Wyckoff Phase Score ────────────────────────────
-
-def calc_wyckoff_score(df_4h: pd.DataFrame) -> float:
-    """
-    Detect Wyckoff accumulation patterns.
-    Looks for: Spring (fake breakdown on low volume) or LPS (higher low on low volume).
-    """
-    if df_4h.empty or len(df_4h) < 60:
-        return 50.0
-
-    close  = df_4h["close"]
-    high   = df_4h["high"]
-    low    = df_4h["low"]
-    vol    = df_4h["volume"]
-    vol_avg = vol.rolling(20).mean()
-
-    score = 50.0
-
-    # Find trading range (last 40 candles)
-    range_low  = low.iloc[-40:].min()
-    range_high = high.iloc[-40:].max()
-    range_size = range_high - range_low
-
-    if range_size <= 0:
-        return 50.0
-
-    cur_price  = close.iloc[-1]
-    cur_vol    = vol.iloc[-1]
-    cur_vol_avg = vol_avg.iloc[-1]
-
-    # Position in range (0 = bottom, 1 = top)
-    pos_in_range = (cur_price - range_low) / range_size
-
-    # Spring detection: price near/below range low, LOW volume
-    recent_low = low.iloc[-5:].min()
-    if recent_low <= range_low * 1.01:  # Price touched or broke below range low
-        vol_ratio = cur_vol / cur_vol_avg if cur_vol_avg > 0 else 1
-        if vol_ratio < 0.7:  # Low volume — Spring!
-            score = 85
-            logger.debug(f"  SPRING DETECTED: vol_ratio={vol_ratio:.2f}")
-        else:
-            score = 45  # Breakdown with high volume = not spring
-
-    # LPS detection: price making higher low after Spring
-    elif pos_in_range < 0.3:  # Price near bottom of range
-        # Check if previous candles went lower (creating higher low)
-        recent_lows = low.iloc[-10:]
-        if recent_lows.iloc[-1] > recent_lows.iloc[:-1].min():
-            vol_trend = vol.iloc[-3:].mean() / vol.iloc[-10:-3].mean()
-            if vol_trend < 0.8:  # Declining volume on pullback
-                score = 75
-                logger.debug("  LPS pattern: higher low on declining volume")
-
-    # SOS detection: price breaking above range high on HIGH volume
-    elif cur_price > range_high * 0.99:
-        vol_ratio = cur_vol / cur_vol_avg if cur_vol_avg > 0 else 1
-        if vol_ratio > 1.5:  # High volume breakout
-            score = 80
-            logger.debug(f"  SOS: breakout with vol_ratio={vol_ratio:.2f}")
-
-    # Distribution warning: price at top of range with high volume
-    if pos_in_range > 0.85 and cur_vol > cur_vol_avg * 1.3:
-        score = max(score - 25, 10)
-
-    return score_clamp(score)
-
+# ── Signals 1-5 migrated to signals/technical.py (Phase 8B) ──
+# calc_trend_score, calc_rsi_score, calc_macd_score,
+# calc_volume_score, calc_wyckoff_score are imported above.
 
 # ── Signal 6: On-Chain Score ──────────────────────────────────
 
@@ -320,17 +106,14 @@ def detect_regime(df_4h: pd.DataFrame) -> str:
     low   = df_4h["low"]
 
     # ATR for volatility detection — check VOLATILE before directional regimes
+    # Use prior 20 bars (exclude current) to avoid self-referential comparison
     atr_series = _ta.volatility.AverageTrueRange(high, low, close, window=14).average_true_range()
-    if not atr_series.empty and len(atr_series.dropna()) > 20:
-        atr_now  = atr_series.iloc[-1]
-        atr_avg  = atr_series.iloc[-20:].mean()
-        if atr_avg > 0 and atr_now > atr_avg * 2.5:
-            # Check ADX — no clear direction needed for VOLATILE
-            adx_series = _ta.trend.ADXIndicator(high, low, close, window=14).adx()
-            if not adx_series.empty:
-                adx = adx_series.iloc[-1]
-                if not pd.isna(adx) and adx < FILTERS["adx_trending"]:  # ADX < 25
-                    return "VOLATILE"
+    if not atr_series.empty and len(atr_series.dropna()) > 21:
+        atr_now = atr_series.iloc[-1]
+        atr_avg = atr_series.iloc[-21:-1].mean()  # prior 20, not including current
+        if atr_avg > 0 and atr_now > atr_avg * 2.0:
+            # High ATR spike = VOLATILE regardless of trend direction
+            return "VOLATILE"
 
     adx_ind = _ta.trend.ADXIndicator(df_4h["high"], df_4h["low"], df_4h["close"], window=14)
     adx = adx_ind.adx().iloc[-1]
@@ -352,9 +135,11 @@ def detect_regime(df_4h: pd.DataFrame) -> str:
 
 def score_coin(symbol: str, fear_greed: int = 50,
                funding_rate: float = 0,
-               allowed_tiers: list = None) -> dict:
+               allowed_tiers: list = None,
+               extended_ctx: dict = None) -> dict:
     """
     Calculate full signal score for one coin.
+    extended_ctx: optional Phase 7D data (stablecoin_flows, bybit_basis, defillama_fees)
     Returns dict with all sub-scores and total.
     """
     if allowed_tiers is None:
@@ -440,6 +225,42 @@ def score_coin(symbol: str, fear_greed: int = 50,
     in_kill_zone, kz_mod = get_kill_zone_modifier()
     total  = score_clamp(total + kz_mod)
 
+    # Phase 7C: Advanced technical modifiers
+    vwap_mod   = calc_vwap_score(df_4h)
+    vdelta_mod = calc_volume_delta_score(df_4h)
+    bb_mod     = calc_bb_squeeze_score(df_4h)
+
+    # BTC data for correlation filter (only needed for non-BTC coins)
+    if symbol != "BTCUSDT":
+        df_btc = db.get_candles("BTCUSDT", "4h", limit=35)
+        corr_mod = calc_correlation_filter(df_4h, df_btc, regime)
+    else:
+        corr_mod = 0.0
+
+    total = score_clamp(total + vwap_mod + vdelta_mod + bb_mod + corr_mod)
+
+    # Phase 7D: Extended macro modifiers (pre-fetched, shared across coins)
+    stable_mod = 0.0
+    basis_mod  = 0.0
+    fees_mod   = 0.0
+    if extended_ctx:
+        stable_flows = extended_ctx.get("stablecoin_flows", {})
+        stable_mod   = float(stable_flows.get("modifier", 0.0))
+
+        basis_data = extended_ctx.get("bybit_basis", {})
+        if symbol in basis_data:
+            from collector.macro_extended import get_basis_modifier
+            basis_mod = get_basis_modifier(symbol, basis_data)
+
+        fees_data = extended_ctx.get("defillama_fees", {})
+        if fees_data:
+            from config import SECTOR_MAP
+            from collector.macro_extended import get_fees_ecosystem_score
+            chain = SECTOR_MAP.get(symbol, "")
+            fees_mod = get_fees_ecosystem_score(chain, fees_data)
+
+    total = score_clamp(total + stable_mod + basis_mod + fees_mod)
+
     fired  = total >= SIGNAL_THRESHOLD
     strong = total >= SIGNAL_STRONG
 
@@ -461,6 +282,13 @@ def score_coin(symbol: str, fear_greed: int = 50,
         "whale_modifier":   whale_mod,
         "kill_zone_active":   in_kill_zone,
         "kill_zone_modifier": kz_mod,
+        "vwap_modifier":      vwap_mod,
+        "vdelta_modifier":    vdelta_mod,
+        "bb_modifier":        bb_mod,
+        "corr_modifier":      corr_mod,
+        "stable_modifier":    stable_mod,
+        "basis_modifier":     basis_mod,
+        "fees_modifier":      fees_mod,
     }
 
     # Store to DB
@@ -470,10 +298,12 @@ def score_coin(symbol: str, fear_greed: int = 50,
 
 
 def scan_all_coins(fear_greed: int = 50,
-                   allowed_tiers: list = None) -> list[dict]:
+                   allowed_tiers: list = None,
+                   extended_ctx: dict = None) -> list[dict]:
     """
     Score all coins. Returns sorted list (highest score first).
     Called on every 4H candle close.
+    extended_ctx: Phase 7D data fetched once before the scan loop.
     """
     if allowed_tiers is None:
         allowed_tiers = [1, 2, 3]
@@ -485,7 +315,8 @@ def scan_all_coins(fear_greed: int = 50,
     for symbol in COINS:
         try:
             result = score_coin(symbol, fear_greed=fear_greed,
-                                allowed_tiers=allowed_tiers)
+                                allowed_tiers=allowed_tiers,
+                                extended_ctx=extended_ctx)
             results.append(result)
         except Exception as e:
             logger.error(f"Error scoring {symbol}: {e}")
