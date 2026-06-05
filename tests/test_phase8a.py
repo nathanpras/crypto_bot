@@ -222,3 +222,79 @@ def test_liquidation_cascade_score_long_wipeout(db):
 def test_liquidation_cascade_score_no_data(db):
     score = get_liquidation_cascade_score("SOLUSDT", db)
     assert score == 50.0, "Missing data should return neutral 50"
+
+from collector.onchain_real import (
+    fetch_btc_onchain, fetch_eth_onchain,
+    get_real_onchain_score, compute_nvt_score,
+)
+
+def _mock_blockchain_info():
+    stats = MagicMock()
+    stats.status_code = 200
+    stats.json.return_value = {
+        "n_unique_addresses": 950_000,
+        "n_tx": 350_000,
+    }
+    stats.raise_for_status = lambda: None
+    vol = MagicMock()
+    vol.status_code = 200
+    vol.json.return_value = {"values": [{"y": 8_500_000_000}]}
+    vol.raise_for_status = lambda: None
+    return [stats, vol]
+
+def test_fetch_btc_onchain_parses_active_addresses():
+    with patch("collector.onchain_real.requests.get",
+               side_effect=_mock_blockchain_info()):
+        result = fetch_btc_onchain()
+    assert result["asset"] == "BTC"
+    assert result["active_addr"] == 950_000
+    assert result["tx_count"] == 350_000
+
+def test_fetch_btc_onchain_handles_api_failure():
+    with patch("collector.onchain_real.requests.get",
+               side_effect=Exception("network error")):
+        result = fetch_btc_onchain()
+    assert result == {}
+
+def test_fetch_eth_onchain_no_key(monkeypatch):
+    monkeypatch.delenv("ETHERSCAN_API_KEY", raising=False)
+    result = fetch_eth_onchain()
+    assert result == {}
+
+def test_fetch_eth_onchain_with_key(monkeypatch):
+    monkeypatch.setenv("ETHERSCAN_API_KEY", "test_key")
+    m = MagicMock()
+    m.status_code = 200
+    m.raise_for_status = lambda: None
+    m.json.return_value = {
+        "status": "1",
+        "result": [{"uniqTxsCount": "420000"}],
+    }
+    with patch("collector.onchain_real.requests.get", return_value=m):
+        result = fetch_eth_onchain()
+    assert result["asset"] == "ETH"
+    assert result["active_addr"] == 420_000
+
+def test_real_onchain_score_neutral_when_no_data(db):
+    score = get_real_onchain_score("BTCUSDT", db)
+    assert score == 50.0
+
+def test_real_onchain_score_non_btc_eth_neutral(db):
+    score = get_real_onchain_score("SOLUSDT", db)
+    assert score == 50.0
+
+def test_compute_nvt_score_rising_activity_bullish(db):
+    from datetime import date, timedelta
+    # Seed 14 days: recent 7 days have higher tx count than older 7 days
+    for i in range(14):
+        tx_count = 500_000 if i < 7 else 300_000  # i=0 is most recent
+        db.upsert_onchain_real("BTC", {
+            "date": date.today() - timedelta(days=i),
+            "active_addr": 900_000,
+            "tx_count": tx_count,
+            "exchange_inflow": 1000.0,
+            "exchange_outflow": 1000.0,
+            "nvt_ratio": 40.0,
+        })
+    score = compute_nvt_score("BTC", db)
+    assert score > 55, f"Rising tx activity should score above neutral, got {score}"
