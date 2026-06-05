@@ -255,7 +255,9 @@ def _global_macro_score(db) -> float:
         if not data:
             return 50.0
 
-        btc_dom = float(data.get("bitcoin_dominance_percentage", 50) or 50)
+        # CoinGecko /global: BTC dominance is under market_cap_percentage.btc
+        mcap_pct = data.get("market_cap_percentage", {}) or {}
+        btc_dom = float(mcap_pct.get("btc", 50) or 50)
         mcap_chg_24h = float(data.get("market_cap_change_percentage_24h_usd", 0) or 0)
 
         # BTC dominance signal:
