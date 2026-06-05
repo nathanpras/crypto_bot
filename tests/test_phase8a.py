@@ -310,3 +310,76 @@ def test_collect_all_onchain_real_returns_dict(db):
     assert "BTC" in results
     assert "ETH" in results
     assert results["BTC"] == "skipped"
+
+from collector.social_lunar import (
+    fetch_lunarcrush, fetch_reddit_sentiment,
+    get_lunarcrush_score, get_google_trends_score, get_reddit_sentiment_score,
+)
+
+def test_fetch_lunarcrush_no_key(monkeypatch):
+    monkeypatch.delenv("LUNARCRUSH_API_KEY", raising=False)
+    result = fetch_lunarcrush("BTCUSDT")
+    assert result == {}
+
+def test_fetch_lunarcrush_parses_galaxy_score(monkeypatch):
+    monkeypatch.setenv("LUNARCRUSH_API_KEY", "test_key")
+    m = MagicMock()
+    m.raise_for_status = lambda: None
+    m.json.return_value = {
+        "data": {"galaxy_score": 68.5, "alt_rank": 5, "social_volume_24h": 15000}
+    }
+    with patch("collector.social_lunar.requests.get", return_value=m):
+        result = fetch_lunarcrush("BTCUSDT")
+    assert result["galaxy_score"] == pytest.approx(68.5)
+    assert result["alt_rank"] == 5
+
+def test_fetch_lunarcrush_api_error_returns_empty(monkeypatch):
+    monkeypatch.setenv("LUNARCRUSH_API_KEY", "test_key")
+    with patch("collector.social_lunar.requests.get",
+               side_effect=Exception("timeout")):
+        result = fetch_lunarcrush("BTCUSDT")
+    assert result == {}
+
+def test_lunarcrush_score_high_galaxy_bullish(db):
+    from datetime import datetime
+    db.upsert_lunarcrush("BTCUSDT", {"galaxy_score": 80.0, "alt_rank": 2, "social_volume": 50000, "timestamp": datetime.utcnow()})
+    score = get_lunarcrush_score("BTCUSDT", db)
+    assert score > 70
+
+def test_lunarcrush_score_low_galaxy_bearish(db):
+    from datetime import datetime
+    db.upsert_lunarcrush("BTCUSDT", {"galaxy_score": 20.0, "alt_rank": 95, "social_volume": 2000, "timestamp": datetime.utcnow()})
+    score = get_lunarcrush_score("BTCUSDT", db)
+    assert score < 40
+
+def test_lunarcrush_score_no_data_neutral(db):
+    score = get_lunarcrush_score("NEARUSDT", db)
+    assert score == 50.0
+
+def test_reddit_sentiment_score_bullish(db):
+    from datetime import date
+    db.upsert_reddit_sentiment("BTCUSDT", {
+        "date": date.today(), "post_count": 200,
+        "avg_sentiment": 0.45, "bullish_pct": 72.0,
+    })
+    score = get_reddit_sentiment_score("BTCUSDT", db)
+    assert score > 60
+
+def test_reddit_sentiment_score_bearish(db):
+    from datetime import date
+    db.upsert_reddit_sentiment("BTCUSDT", {
+        "date": date.today(), "post_count": 200,
+        "avg_sentiment": -0.40, "bullish_pct": 22.0,
+    })
+    score = get_reddit_sentiment_score("BTCUSDT", db)
+    assert score < 40
+
+def test_google_trends_score_high_interest_bullish(db):
+    from datetime import date
+    db.upsert_google_trends("BTCUSDT", {"date": date.today(), "interest": 90})
+    score = get_google_trends_score("BTCUSDT", db)
+    assert score > 70
+
+def test_google_trends_score_no_data_neutral(db):
+    score = get_google_trends_score("INJUSDT", db)
+    assert score == 50.0
