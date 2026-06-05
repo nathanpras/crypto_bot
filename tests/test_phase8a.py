@@ -383,3 +383,53 @@ def test_google_trends_score_high_interest_bullish(db):
 def test_google_trends_score_no_data_neutral(db):
     score = get_google_trends_score("INJUSDT", db)
     assert score == 50.0
+
+from collector.orderbook import fetch_orderbook_imbalance, get_orderbook_score
+from collector.funding_history import fetch_funding_history, get_funding_oscillator_score
+
+def test_orderbook_score_bid_heavy_bullish():
+    score = get_orderbook_score("BTCUSDT", 1.8)
+    assert score > 60
+
+def test_orderbook_score_ask_heavy_bearish():
+    score = get_orderbook_score("BTCUSDT", 0.4)
+    assert score < 40
+
+def test_orderbook_score_balanced():
+    score = get_orderbook_score("BTCUSDT", 1.0)
+    assert 45 <= score <= 55
+
+def test_fetch_funding_history_no_key(monkeypatch):
+    monkeypatch.delenv("COINALYZE_API_KEY", raising=False)
+    result = fetch_funding_history("BTCUSDT")
+    assert result == []
+
+def test_funding_oscillator_score_negative_funding_bullish(db):
+    from datetime import datetime, timedelta
+    # Seed 28 records starting 8h ago (i=1..28) so the most-recent slot is free
+    for i in range(1, 29):
+        db.upsert_funding_history("BTCUSDT", {
+            "timestamp": datetime.utcnow() - timedelta(hours=i * 8),
+            "funding_rate": 0.0003,
+        })
+    # Insert the current-period record (most recent) with negative funding
+    db.upsert_funding_history("BTCUSDT", {
+        "timestamp": datetime.utcnow() - timedelta(minutes=5),
+        "funding_rate": -0.005,
+    })
+    score = get_funding_oscillator_score("BTCUSDT", db)
+    assert score > 55, f"Negative funding vs positive MA should be bullish, got {score}"
+
+def test_funding_oscillator_score_very_positive_bearish(db):
+    from datetime import datetime, timedelta
+    for i in range(28):
+        db.upsert_funding_history("BTCUSDT2", {
+            "timestamp": datetime.utcnow() - timedelta(hours=i * 8 + 2),
+            "funding_rate": 0.0001,
+        })
+    db.upsert_funding_history("BTCUSDT2", {
+        "timestamp": datetime.utcnow() - timedelta(hours=1),
+        "funding_rate": 0.012,
+    })
+    score = get_funding_oscillator_score("BTCUSDT2", db)
+    assert score < 45, f"Very high funding vs low MA should be bearish, got {score}"
