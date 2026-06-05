@@ -243,14 +243,42 @@ def _tvl_narrative_score(symbol: str, db) -> float:
 
 
 def _global_macro_score(db) -> float:
-    """M5: Global macro — from macro table if available, else 50."""
+    """M5: Global crypto macro — BTC dominance + market cap momentum."""
+    import requests
     try:
-        result = db.conn.execute("""
-            SELECT global_m2 FROM macro ORDER BY date DESC LIMIT 1
-        """).fetchone()
-        if not result or result[0] is None:
+        r = requests.get(
+            "https://api.coingecko.com/api/v3/global",
+            timeout=10,
+        )
+        r.raise_for_status()
+        data = r.json().get("data", {})
+        if not data:
             return 50.0
-        return 50.0  # Will be enhanced with FRED data when available
+
+        btc_dom = float(data.get("bitcoin_dominance_percentage", 50) or 50)
+        mcap_chg_24h = float(data.get("market_cap_change_percentage_24h_usd", 0) or 0)
+
+        # BTC dominance signal:
+        # Rising BTC dom (>55%) = risk-off, capital fleeing to BTC = mildly bearish for alts
+        # Falling BTC dom (<45%) = altseason / risk-on = bullish
+        # For BTC itself, high dominance is actually neutral-bullish (BTC strength)
+        # We use a balanced approach: extreme dominance either way = volatile
+        if btc_dom > 60:        dom_score = 45.0   # Very high BTC dom = alts suppressed
+        elif btc_dom > 55:      dom_score = 50.0
+        elif btc_dom > 50:      dom_score = 55.0
+        elif btc_dom > 45:      dom_score = 65.0   # Alt season territory = bullish
+        else:                    dom_score = 70.0   # Very low BTC dom = full altseason
+
+        # Market cap momentum (24h change)
+        if mcap_chg_24h > 5:    mom_score = 80.0
+        elif mcap_chg_24h > 2:  mom_score = 70.0
+        elif mcap_chg_24h > 0:  mom_score = 58.0
+        elif mcap_chg_24h > -2: mom_score = 45.0
+        elif mcap_chg_24h > -5: mom_score = 32.0
+        else:                    mom_score = 18.0
+
+        combined = dom_score * 0.4 + mom_score * 0.6
+        return float(max(0.0, min(100.0, combined)))
     except Exception:
         return 50.0
 

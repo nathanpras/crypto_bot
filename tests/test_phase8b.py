@@ -226,3 +226,11 @@ def test_m2_tvl_score_range():
     scores = get_all_signals("BTCUSDT", db)
     db.close()
     assert 0.0 <= scores["M2"] <= 100.0
+
+
+def test_m5_global_macro_score_range():
+    """M5 returns valid 0-100 (live CoinGecko or neutral fallback)."""
+    db = Database(":memory:")
+    scores = get_all_signals("BTCUSDT", db)
+    db.close()
+    assert 0.0 <= scores["M5"] <= 100.0
