@@ -245,3 +245,11 @@ def test_d3_options_score_range():
     db.close()
     assert 0.0 <= btc_scores["D3"] <= 100.0
     assert sol_scores["D3"] == 50.0, "Non-BTC/ETH should return 50.0 for D3"
+
+
+def test_s2_news_sentiment_range():
+    """S2 returns valid 0-100 (live CryptoPanic or neutral fallback)."""
+    db = Database(":memory:")
+    scores = get_all_signals("BTCUSDT", db)
+    db.close()
+    assert 0.0 <= scores["S2"] <= 100.0

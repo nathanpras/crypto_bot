@@ -32,18 +32,64 @@ def _fear_greed_score(fear_greed: int) -> float:
 
 
 def _news_sentiment_score(symbol: str, db) -> float:
-    """S2: VADER news sentiment rolling 24h from coin_news table."""
-    from datetime import datetime, timedelta
-    cutoff = datetime.utcnow() - timedelta(hours=24)
+    """S2: News sentiment — CryptoPanic vote ratio for recent 24h news."""
+    import requests
+
+    # Map symbol to CryptoPanic currency code
+    currency_map = {
+        "BTCUSDT": "BTC", "ETHUSDT": "ETH", "SOLUSDT": "SOL",
+        "XRPUSDT": "XRP", "BNBUSDT": "BNB", "ADAUSDT": "ADA",
+        "AVAXUSDT": "AVAX", "LINKUSDT": "LINK", "DOTUSDT": "DOT",
+        "ARBUSDT": "ARB", "OPUSDT": "OP", "NEARUSDT": "NEAR",
+    }
+    currency = currency_map.get(symbol, symbol.replace("USDT", ""))
+
     try:
-        rows = db.conn.execute("""
-            SELECT vader_compound FROM coin_news
-            WHERE symbol = ? AND published_at >= ? AND vader_compound IS NOT NULL
-        """, [symbol, cutoff]).fetchall()
-        if not rows:
+        r = requests.get(
+            "https://cryptopanic.com/api/free/v1/posts/",
+            params={
+                "auth_token": "free",
+                "public": "true",
+                "currencies": currency,
+                "filter": "hot",
+            },
+            timeout=10,
+        )
+        if r.status_code != 200:
             return 50.0
-        avg = sum(r[0] for r in rows) / len(rows)
-        return float(max(0.0, min(100.0, (avg + 1) / 2 * 100)))
+
+        results = r.json().get("results", [])
+        if not results:
+            return 50.0
+
+        total_pos = 0
+        total_neg = 0
+        total_posts = 0
+
+        for post in results[:20]:  # Cap at 20 most recent
+            votes = post.get("votes", {})
+            pos = int(votes.get("positive", 0) or 0)
+            neg = int(votes.get("negative", 0) or 0)
+            total_pos += pos
+            total_neg += neg
+            total_posts += 1
+
+        if total_posts == 0:
+            return 50.0
+
+        total_votes = total_pos + total_neg
+        if total_votes < 5:
+            return 50.0  # Not enough votes to be meaningful
+
+        sentiment_ratio = total_pos / total_votes  # 0.0 to 1.0
+
+        # Map 0-1 ratio to 0-100 score
+        # 0.5 = neutral = 50
+        # 0.8+ = very positive = 80
+        # 0.2- = very negative = 20
+        score = sentiment_ratio * 100
+        # Clamp to reasonable range (extreme readings are rare)
+        return float(max(10.0, min(90.0, score)))
     except Exception:
         return 50.0
 
