@@ -168,3 +168,57 @@ def test_get_funding_30d_ma(db):
         })
     ma = db.get_funding_30d_ma("BTCUSDT")
     assert abs(ma - 0.0003) < 1e-6
+
+from unittest.mock import patch, MagicMock
+from collector.liquidations import fetch_liquidation_cascade, get_liquidation_cascade_score
+
+def _mock_coinglass(long_usd: float, short_usd: float):
+    m = MagicMock()
+    m.status_code = 200
+    m.json.return_value = {
+        "code": "0",
+        "data": [
+            {"longLiqUsd": str(long_usd / 24), "shortLiqUsd": str(short_usd / 24)}
+            for _ in range(24)
+        ]
+    }
+    m.raise_for_status = lambda: None
+    return m
+
+def test_fetch_liquidation_cascade_no_key(monkeypatch):
+    monkeypatch.delenv("COINGLASS_API_KEY", raising=False)
+    result = fetch_liquidation_cascade("BTCUSDT")
+    assert result == {}
+
+def test_fetch_liquidation_cascade_short_squeeze(monkeypatch):
+    monkeypatch.setenv("COINGLASS_API_KEY", "test_key")
+    with patch("collector.liquidations.requests.get",
+               return_value=_mock_coinglass(2_000_000, 10_000_000)):
+        result = fetch_liquidation_cascade("BTCUSDT")
+    assert result["liq_short_24h"] == pytest.approx(10_000_000, rel=0.01)
+    assert result["liq_long_24h"] == pytest.approx(2_000_000, rel=0.01)
+
+def test_fetch_liquidation_cascade_api_error(monkeypatch):
+    monkeypatch.setenv("COINGLASS_API_KEY", "test_key")
+    m = MagicMock()
+    m.raise_for_status = lambda: None
+    m.json.return_value = {"code": "1", "msg": "rate limit"}
+    with patch("collector.liquidations.requests.get", return_value=m):
+        result = fetch_liquidation_cascade("BTCUSDT")
+    assert result == {}
+
+def test_liquidation_cascade_score_short_squeeze(db):
+    from datetime import datetime
+    db.upsert_liquidation("BTCUSDT", {"liq_long_usd": 1_000_000, "liq_short_usd": 9_000_000, "timestamp": datetime.utcnow()})
+    score = get_liquidation_cascade_score("BTCUSDT", db)
+    assert score > 70, "Short squeeze (90% short liq) should score > 70"
+
+def test_liquidation_cascade_score_long_wipeout(db):
+    from datetime import datetime
+    db.upsert_liquidation("BTCUSDT", {"liq_long_usd": 9_000_000, "liq_short_usd": 1_000_000, "timestamp": datetime.utcnow()})
+    score = get_liquidation_cascade_score("BTCUSDT", db)
+    assert score < 30, "Long wipeout (90% long liq) should score < 30"
+
+def test_liquidation_cascade_score_no_data(db):
+    score = get_liquidation_cascade_score("SOLUSDT", db)
+    assert score == 50.0, "Missing data should return neutral 50"
