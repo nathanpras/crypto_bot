@@ -165,7 +165,7 @@ def get_reddit_sentiment_score(symbol: str, db) -> float:
     if not row:
         return 50.0
     avg_sent = float(row.get("avg_sentiment") or 0)
-    bullish_pct = float(row.get("bullish_pct") or 50)
+    bullish_pct = float(row.get("bullish_pct") if row.get("bullish_pct") is not None else 50)
 
     sent_score = (avg_sent + 1) / 2 * 100
     combined = sent_score * 0.6 + bullish_pct * 0.4
@@ -186,6 +186,15 @@ def collect_all_social_lunar(db) -> dict:
             except Exception as e:
                 logger.warning(f"Failed to upsert lunarcrush for {symbol}: {e}")
 
+    for symbol in ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "BNBUSDT", "ADAUSDT"]:
+        data = fetch_google_trends(symbol)
+        if data:
+            try:
+                db.upsert_google_trends(symbol, data)
+                results["trends"] += 1
+            except Exception as e:
+                logger.warning(f"Failed to upsert google trends for {symbol}: {e}")
+
     for symbol in ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"]:
         data = fetch_reddit_sentiment(symbol)
         if data:
@@ -195,5 +204,5 @@ def collect_all_social_lunar(db) -> dict:
             except Exception as e:
                 logger.warning(f"Failed to upsert reddit sentiment for {symbol}: {e}")
 
-    logger.info(f"Social collected: LunarCrush={results['lunarcrush']}, Reddit={results['reddit']}")
+    logger.info(f"Social collected: LunarCrush={results['lunarcrush']}, Trends={results['trends']}, Reddit={results['reddit']}")
     return results
