@@ -933,11 +933,12 @@ class Database:
     # ── Phase 8: Liquidations ────────────────────────────────────
 
     def upsert_liquidation(self, symbol: str, data: dict):
+        ts = data.get("timestamp", datetime.utcnow())
         self.conn.execute("""
             INSERT OR REPLACE INTO liquidations
                 (symbol, timestamp, liq_long_usd, liq_short_usd)
-            VALUES (?, now(), ?, ?)
-        """, [symbol, data.get("liq_long_usd"), data.get("liq_short_usd")])
+            VALUES (?, ?, ?, ?)
+        """, [symbol, ts, data.get("liq_long_usd"), data.get("liq_short_usd")])
 
     def get_latest_liquidation(self, symbol: str, max_age_hours: int = 6):
         cutoff = datetime.utcnow() - timedelta(hours=max_age_hours)
@@ -994,11 +995,12 @@ class Database:
     # ── Phase 8: LunarCrush ───────────────────────────────────────
 
     def upsert_lunarcrush(self, symbol: str, data: dict):
+        ts = data.get("timestamp", datetime.utcnow())
         self.conn.execute("""
             INSERT OR REPLACE INTO lunarcrush_metrics
                 (symbol, timestamp, galaxy_score, alt_rank, social_volume)
-            VALUES (?, now(), ?, ?, ?)
-        """, [symbol, data.get("galaxy_score"), data.get("alt_rank"), data.get("social_volume")])
+            VALUES (?, ?, ?, ?, ?)
+        """, [symbol, ts, data.get("galaxy_score"), data.get("alt_rank"), data.get("social_volume")])
 
     def get_latest_lunarcrush(self, symbol: str, max_age_hours: int = 24):
         cutoff = datetime.utcnow() - timedelta(hours=max_age_hours)
