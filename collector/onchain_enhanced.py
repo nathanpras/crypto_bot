@@ -231,10 +231,11 @@ def score_from_futures_data(data: dict) -> float:
         score = max(score - 8, 15)    # Extreme longs = crowded, risky
 
     # Long liquidation cascade = capitulation = potential bottom
-    if liq_l > 0 and liq_s > 0:
-        total_liq = liq_l + liq_s
-        if liq_l / total_liq > 0.80 and total_liq > 5_000_000:
-            score = max(score, 75)    # Heavy long liquidation = bottom signal
+    # liq_long and liq_short are mutually exclusive (set by price direction in fetch_liquidations)
+    if liq_l > 5_000_000:
+        score = max(score, 75)    # Heavy long liquidation = capitulation bottom signal
+    elif liq_s > 5_000_000:
+        score = min(score + 5, 90)  # Short squeeze = additional bullish momentum
 
     return float(max(0.0, min(100.0, score)))
 
@@ -349,3 +350,54 @@ def collect_all_onchain(full: bool = False):
                 logger.warning(f"  CoinMetrics failed for {asset}: {e}")
 
     logger.info("On-chain collection complete.")
+
+
+def get_mvrv_score(symbol: str, db) -> float:
+    """O1: MVRV ratio score 0-100 from onchain table."""
+    asset_map = {"BTCUSDT": "BTC", "ETHUSDT": "ETH"}
+    asset = asset_map.get(symbol)
+    if not asset:
+        return 50.0
+
+    result = db.conn.execute("""
+        SELECT mvrv_ratio FROM onchain WHERE asset = ?
+        ORDER BY date DESC LIMIT 1
+    """, [asset]).fetchone()
+
+    if not result or result[0] is None:
+        return 50.0
+
+    mvrv = float(result[0])
+    if mvrv < 0.8:    return 88.0
+    elif mvrv < 1.0:  return 78.0
+    elif mvrv < 1.5:  return 62.0
+    elif mvrv < 2.0:  return 50.0
+    elif mvrv < 2.5:  return 38.0
+    elif mvrv < 3.0:  return 25.0
+    else:              return 12.0
+
+
+def get_netflow_score(symbol: str, db) -> float:
+    """O2: Exchange netflow score 0-100. Negative netflow (outflow) = bullish."""
+    asset_map = {"BTCUSDT": "BTC", "ETHUSDT": "ETH"}
+    asset = asset_map.get(symbol)
+    if not asset:
+        return 50.0
+
+    from datetime import datetime, timedelta
+    cutoff = (datetime.utcnow() - timedelta(days=7)).date()
+    result = db.conn.execute("""
+        SELECT AVG(exch_netflow) FROM onchain
+        WHERE asset = ? AND date >= ?
+    """, [asset, cutoff]).fetchone()
+
+    if not result or result[0] is None:
+        return 50.0
+
+    netflow = float(result[0])
+    if netflow < -5000:   return 85.0
+    elif netflow < -1000: return 72.0
+    elif netflow < 0:     return 60.0
+    elif netflow < 1000:  return 45.0
+    elif netflow < 5000:  return 30.0
+    else:                  return 15.0

@@ -433,3 +433,54 @@ def test_funding_oscillator_score_very_positive_bearish(db):
     })
     score = get_funding_oscillator_score("BTCUSDT2", db)
     assert score < 45, f"Very high funding vs low MA should be bearish, got {score}"
+
+from collector.macro_extended import get_altseason_index, get_dex_cex_ratio_score
+from collector.onchain_enhanced import get_mvrv_score, get_netflow_score
+
+def test_altseason_index_returns_float():
+    prices = {
+        "BTCUSDT": 100.0, "ETHUSDT": 110.0, "SOLUSDT": 125.0,
+        "XRPUSDT": 130.0, "ADAUSDT": 140.0,
+    }
+    score = get_altseason_index(prices)
+    assert 0.0 <= score <= 100.0
+
+def test_altseason_btc_dominant_low_score():
+    prices = {"BTCUSDT": 150.0, "ETHUSDT": 95.0, "SOLUSDT": 90.0}
+    score = get_altseason_index(prices)
+    assert score < 50, "BTC outperforming alts = low altseason score"
+
+def test_altseason_alts_dominant_high_score():
+    prices = {"BTCUSDT": 100.0, "ETHUSDT": 145.0, "SOLUSDT": 160.0,
+              "XRPUSDT": 155.0, "ADAUSDT": 170.0}
+    score = get_altseason_index(prices)
+    assert score > 50, "Alts outperforming BTC = high altseason score"
+
+def test_dex_cex_ratio_returns_float():
+    m = MagicMock()
+    m.raise_for_status = lambda: None
+    m.json.return_value = {"total24h": 3_000_000_000}
+    with patch("collector.macro_extended.requests.get", return_value=m):
+        score = get_dex_cex_ratio_score()
+    assert 0.0 <= score <= 100.0
+
+def test_mvrv_score_undervalued_bullish(db):
+    db.conn.execute(
+        "INSERT OR REPLACE INTO onchain (asset, date, mvrv_ratio) VALUES ('BTC', CURRENT_DATE, 0.85)"
+    )
+    score = get_mvrv_score("BTCUSDT", db)
+    assert score > 70, "MVRV < 1 = undervalued = bullish"
+
+def test_mvrv_score_overvalued_bearish(db):
+    db.conn.execute(
+        "INSERT OR REPLACE INTO onchain (asset, date, mvrv_ratio) VALUES ('BTC', CURRENT_DATE, 3.5)"
+    )
+    score = get_mvrv_score("BTCUSDT", db)
+    assert score < 20, "MVRV > 3 = overvalued = bearish"
+
+def test_netflow_score_outflow_bullish(db):
+    db.conn.execute(
+        "INSERT OR REPLACE INTO onchain (asset, date, exch_netflow) VALUES ('BTC', CURRENT_DATE, -5500)"
+    )
+    score = get_netflow_score("BTCUSDT", db)
+    assert score > 70, "Strong outflow (negative netflow) = bullish"
