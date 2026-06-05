@@ -210,3 +210,19 @@ def test_d4_basis_score_is_live_or_neutral():
     assert 0.0 <= scores["D4"] <= 100.0
     # D4 should NOT always be 50.0 anymore (may be 50 if network unavailable in CI)
     # Just verify it's in range
+
+
+def test_m1_stablecoin_score_range():
+    """M1 returns valid 0-100 (live DeFiLlama or neutral fallback)."""
+    db = Database(":memory:")
+    scores = get_all_signals("BTCUSDT", db)
+    db.close()
+    assert 0.0 <= scores["M1"] <= 100.0
+
+
+def test_m2_tvl_score_range():
+    """M2 returns valid 0-100 (live DeFiLlama or neutral fallback)."""
+    db = Database(":memory:")
+    scores = get_all_signals("BTCUSDT", db)
+    db.close()
+    assert 0.0 <= scores["M2"] <= 100.0

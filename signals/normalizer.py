@@ -176,29 +176,70 @@ def _futures_basis_score(symbol: str, db) -> float:
 
 
 def _stablecoin_score(db) -> float:
-    """M1: Stablecoin supply change — from macro table if available.
-    NOTE: macro table does not currently have stablecoin_change_7d,
-    so this falls back to 50.0 until the column is added."""
+    """M1: Stablecoin supply 7d change — rising supply = more capital entering crypto = bullish."""
+    import requests
     try:
-        result = db.conn.execute("""
-            SELECT stablecoin_change_7d FROM macro
-            ORDER BY date DESC LIMIT 1
-        """).fetchone()
-        if not result or result[0] is None:
+        r = requests.get("https://stablecoins.llama.fi/stablecoins", timeout=10)
+        r.raise_for_status()
+        coins = r.json().get("peggedAssets", [])
+        if not coins:
             return 50.0
-        chg = float(result[0])
-        if chg > 3:    return 75.0
-        elif chg > 1:  return 62.0
-        elif chg > -1: return 50.0
-        elif chg > -3: return 38.0
-        else:           return 25.0
+
+        total_now = 0.0
+        total_7d_ago = 0.0
+        for coin in coins:
+            circ = coin.get("circulating", {})
+            circ_prev = coin.get("circulatingPrevWeek", {})
+            # Values are dicts like {"peggedUSD": 1234567}
+            now_usd = float(circ.get("peggedUSD", 0) or 0)
+            prev_usd = float(circ_prev.get("peggedUSD", 0) or 0)
+            total_now += now_usd
+            total_7d_ago += prev_usd
+
+        if total_7d_ago <= 0:
+            return 50.0
+
+        chg_pct = (total_now - total_7d_ago) / total_7d_ago * 100
+
+        # Rising stablecoin supply = capital entering crypto = bullish
+        if chg_pct > 3:    return 78.0
+        elif chg_pct > 1:  return 65.0
+        elif chg_pct > 0:  return 55.0
+        elif chg_pct > -1: return 45.0
+        elif chg_pct > -3: return 32.0
+        else:               return 20.0
     except Exception:
         return 50.0
 
 
 def _tvl_narrative_score(symbol: str, db) -> float:
-    """M2: TVL narrative stub — returns 50 until sector TVL data is available."""
-    return 50.0
+    """M2: Global DeFi TVL 7d change — rising TVL = bullish narrative."""
+    import requests
+    try:
+        r = requests.get("https://api.llama.fi/v2/historicalChainTvl", timeout=10)
+        r.raise_for_status()
+        data = r.json()
+        if not data or len(data) < 8:
+            return 50.0
+
+        # Most recent day vs 7 days ago
+        latest = float(data[-1].get("tvl", 0))
+        week_ago = float(data[-8].get("tvl", latest))
+
+        if week_ago <= 0:
+            return 50.0
+
+        chg_pct = (latest - week_ago) / week_ago * 100
+
+        if chg_pct > 8:    return 80.0
+        elif chg_pct > 4:  return 68.0
+        elif chg_pct > 1:  return 58.0
+        elif chg_pct > -1: return 50.0
+        elif chg_pct > -4: return 38.0
+        elif chg_pct > -8: return 28.0
+        else:               return 15.0
+    except Exception:
+        return 50.0
 
 
 def _global_macro_score(db) -> float:
