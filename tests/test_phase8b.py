@@ -234,3 +234,14 @@ def test_m5_global_macro_score_range():
     scores = get_all_signals("BTCUSDT", db)
     db.close()
     assert 0.0 <= scores["M5"] <= 100.0
+
+
+def test_d3_options_score_range():
+    """D3 returns valid 0-100 (live Deribit or neutral fallback for non-BTC/ETH)."""
+    db = Database(":memory:")
+    # BTC and ETH have Deribit options
+    btc_scores = get_all_signals("BTCUSDT", db)
+    sol_scores = get_all_signals("SOLUSDT", db)
+    db.close()
+    assert 0.0 <= btc_scores["D3"] <= 100.0
+    assert sol_scores["D3"] == 50.0, "Non-BTC/ETH should return 50.0 for D3"

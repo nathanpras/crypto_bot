@@ -111,22 +111,48 @@ def _long_short_ratio_score(symbol: str, db) -> float:
 
 
 def _options_score(symbol: str, db) -> float:
-    """D3: Options put/call ratio — from options_metrics table."""
-    try:
-        result = db.conn.execute("""
-            SELECT put_call_ratio, skew_25d FROM options_metrics
-            WHERE symbol = ? ORDER BY timestamp DESC LIMIT 1
-        """, [symbol]).fetchone()
-        if not result:
-            return 50.0
-        pc = float(result[0] or 1.0)
-        skew = float(result[1] or 0)
+    """D3: Options put/call OI ratio from Deribit. High puts = fear = contrarian bullish."""
+    import requests
 
-        if pc < 0.7 and skew < -3:   return 85.0
-        elif pc < 1.0:                return 65.0
-        elif pc < 1.3:                return 50.0
-        elif pc < 1.5:                return 35.0
-        else:                          return 18.0
+    # Only supported for BTC and ETH (Deribit BTC/ETH options)
+    currency_map = {"BTCUSDT": "BTC", "ETHUSDT": "ETH"}
+    currency = currency_map.get(symbol)
+    if not currency:
+        return 50.0
+
+    try:
+        r = requests.get(
+            "https://www.deribit.com/api/v2/public/get_book_summary_by_currency",
+            params={"currency": currency, "kind": "option"},
+            timeout=12,
+        )
+        r.raise_for_status()
+        results = r.json().get("result", [])
+        if not results:
+            return 50.0
+
+        put_oi = 0.0
+        call_oi = 0.0
+        for item in results:
+            name = item.get("instrument_name", "")
+            oi = float(item.get("open_interest", 0) or 0)
+            if name.endswith("-P"):
+                put_oi += oi
+            elif name.endswith("-C"):
+                call_oi += oi
+
+        if call_oi <= 0:
+            return 50.0
+
+        pc_ratio = put_oi / call_oi
+
+        # Contrarian: high put/call = fear = bullish signal
+        if pc_ratio > 1.5:    return 82.0   # Extreme fear / hedging = capitulation bottom
+        elif pc_ratio > 1.2:  return 68.0
+        elif pc_ratio > 0.9:  return 55.0   # Slightly more puts = mild fear
+        elif pc_ratio > 0.7:  return 45.0
+        elif pc_ratio > 0.5:  return 30.0   # Heavy call buying = complacency
+        else:                  return 15.0   # Extreme call buying = top signal
     except Exception:
         return 50.0
 
