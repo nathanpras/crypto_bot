@@ -74,7 +74,7 @@ def fetch_eth_onchain() -> dict:
         return {
             "asset": "ETH",
             "date": datetime.utcnow().date(),
-            "active_addr": tx_count,
+            "active_addr": 0,
             "tx_count": tx_count,
             "exchange_inflow": 0.0,
             "exchange_outflow": 0.0,

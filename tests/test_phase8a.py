@@ -273,7 +273,8 @@ def test_fetch_eth_onchain_with_key(monkeypatch):
     with patch("collector.onchain_real.requests.get", return_value=m):
         result = fetch_eth_onchain()
     assert result["asset"] == "ETH"
-    assert result["active_addr"] == 420_000
+    assert result["active_addr"] == 0
+    assert result["tx_count"] == 420_000
 
 def test_real_onchain_score_neutral_when_no_data(db):
     score = get_real_onchain_score("BTCUSDT", db)
@@ -298,3 +299,14 @@ def test_compute_nvt_score_rising_activity_bullish(db):
         })
     score = compute_nvt_score("BTC", db)
     assert score > 55, f"Rising tx activity should score above neutral, got {score}"
+
+
+def test_collect_all_onchain_real_returns_dict(db):
+    from collector.onchain_real import collect_all_onchain_real
+    with patch("collector.onchain_real.requests.get",
+               side_effect=Exception("network error")):
+        results = collect_all_onchain_real(db)
+    assert isinstance(results, dict)
+    assert "BTC" in results
+    assert "ETH" in results
+    assert results["BTC"] == "skipped"
