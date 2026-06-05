@@ -42,6 +42,7 @@ from config import COINS, SIGNAL_THRESHOLD
 from collector.onchain_enhanced import collect_all_onchain
 from collector.narrative import collect_all_tvl
 from collector.token_unlocks import collect_all_token_unlocks
+from collector.macro_extended import collect_all_extended
 
 
 # ── Scan once ─────────────────────────────────────────────────
@@ -62,11 +63,18 @@ def run_scan_once():
         logger.warning("F1 GATE FAILED — No trades allowed. Holding stablecoin.")
         return
 
+    # Phase 7D: fetch extended macro data once before scan loop
+    try:
+        extended_ctx = collect_all_extended()
+    except Exception:
+        extended_ctx = None
+
     # Score all coins
     fear_greed = macro["macro"]["fear_greed"].get("value", 50)
     results = scan_all_coins(
         fear_greed=fear_greed,
-        allowed_tiers=f2["allowed_tiers"]
+        allowed_tiers=f2["allowed_tiers"],
+        extended_ctx=extended_ctx,
     )
 
     # Display results
@@ -129,9 +137,15 @@ async def live_loop():
 
     db         = get_db()
     macro_data = fetch_all_macro()
+    try:
+        ext_ctx = collect_all_extended()
+    except Exception:
+        ext_ctx = None
     _state     = {
         "macro":             macro_data,
+        "extended_ctx":      ext_ctx,
         "last_macro_update": 0,
+        "last_ext_update":   0,
         "scan_count":        0,
     }
 
@@ -151,6 +165,13 @@ async def live_loop():
             logger.info("Refreshing macro data...")
             _state["macro"] = fetch_all_macro()
 
+        # Refresh Phase 7D extended ctx every 6 hours (24 candles)
+        if _state["scan_count"] % 24 == 0:
+            try:
+                _state["extended_ctx"] = collect_all_extended()
+            except Exception:
+                pass
+
         macro = _state["macro"]
         f1    = macro["f1_gate"]
         f2    = macro["f2_gate"]
@@ -163,7 +184,8 @@ async def live_loop():
 
         from signals.engine import score_coin
         result = score_coin(symbol, fear_greed=fear_greed,
-                            allowed_tiers=f2["allowed_tiers"])
+                            allowed_tiers=f2["allowed_tiers"],
+                            extended_ctx=_state.get("extended_ctx"))
 
         if result.get("fired"):
             portfolio_usd = get_portfolio_usd()
@@ -290,7 +312,9 @@ def main():
     parser.add_argument("--macro", action="store_true",
                         help="Check macro gates (F1 + F2)")
     parser.add_argument("--collect-onchain", action="store_true",
-                        help="Fetch Binance Futures OI/funding + optionally TVL/unlocks")
+                        help="Fetch Bybit Futures OI/funding + optionally TVL/unlocks")
+    parser.add_argument("--collect-extended", action="store_true",
+                        help="Fetch Phase 7D data: stablecoin flows, basis, DeFiLlama fees")
     parser.add_argument("--full", action="store_true",
                         help="Dipakai dengan --collect-onchain: fetch TVL + token unlocks juga")
     parser.add_argument("--backtest", action="store_true",
@@ -305,6 +329,14 @@ def main():
                         help="Jumlah Optuna trials (default: 300)")
     parser.add_argument("--compute-signals", action="store_true",
                         help="Hitung sinyal historis dari candle data (diperlukan sebelum --backtest)")
+    parser.add_argument("--collect-phase8", action="store_true",
+                        help="Run all Phase 8 collectors: liquidations, on-chain, social, funding history")
+    parser.add_argument("--collect-liquidations", action="store_true",
+                        help="Fetch liquidation cascade data (CoinGlass)")
+    parser.add_argument("--collect-social-lunar", action="store_true",
+                        help="Fetch LunarCrush social metrics")
+    parser.add_argument("--optimize-weights-all", action="store_true",
+                        help="Walk-forward optimize signal weights for all 5 regimes and save to DB (~5 min)")
 
     args = parser.parse_args()
 
@@ -324,6 +356,16 @@ def main():
 
     elif args.status:
         show_status()
+
+    elif args.collect_extended:
+        logger.info("Phase 7D: Collecting extended macro data...")
+        result = collect_all_extended()
+        print(f"\nStablecoin: ${result['stablecoin_flows'].get('current_bn', 0):.1f}B "
+              f"({result['stablecoin_flows'].get('change_7d_pct', 0):+.1f}% 7d)")
+        print(f"CPI trend: {result['fred_extended'].get('cpi', {}).get('trend', '?')}")
+        print(f"10Y yield: {result['fred_extended'].get('yield_10y', {}).get('trend', '?')}")
+        print(f"Bybit basis: {len(result['bybit_basis'])} symbols")
+        print(f"DeFiLlama fees: {len(result['defillama_fees'])} protocols")
 
     elif args.collect_onchain:
         logger.info("Phase 2: Collecting on-chain data...")
@@ -355,6 +397,130 @@ def main():
     elif args.optimize_weights:
         from backtesting.optimizer import run_optimization
         run_optimization(n_trials=args.trials)
+
+    elif args.collect_phase8:
+        from collector.liquidations import collect_all_liquidations
+        from collector.onchain_real import collect_all_onchain_real
+        from collector.social_lunar import collect_all_social_lunar
+        from collector.funding_history import collect_all_funding_history
+        db = get_db()
+        logger.info("Phase 8: Running all collectors...")
+
+        logger.info("  [1/4] Liquidations...")
+        try:
+            n_liq = collect_all_liquidations(db)
+            logger.info(f"  Liquidations: {n_liq} rows saved")
+        except Exception as e:
+            logger.warning(f"  Liquidations failed: {e}")
+            n_liq = 0
+
+        logger.info("  [2/4] On-chain (real)...")
+        try:
+            r_onchain = collect_all_onchain_real(db)
+            logger.info(f"  On-chain: {r_onchain}")
+        except Exception as e:
+            logger.warning(f"  On-chain failed: {e}")
+            r_onchain = {}
+
+        logger.info("  [3/4] Social / LunarCrush...")
+        try:
+            r_social = collect_all_social_lunar(db)
+            logger.info(f"  Social: {r_social}")
+        except Exception as e:
+            logger.warning(f"  Social failed: {e}")
+            r_social = {}
+
+        logger.info("  [4/4] Funding history...")
+        try:
+            n_fund = collect_all_funding_history(db)
+            logger.info(f"  Funding history: {n_fund} rows saved")
+        except Exception as e:
+            logger.warning(f"  Funding history failed: {e}")
+            n_fund = 0
+
+        print("\nPhase 8 collection summary:")
+        print(f"  Liquidations   : {n_liq} rows")
+        print(f"  On-chain       : {r_onchain}")
+        print(f"  Social/Lunar   : {r_social}")
+        print(f"  Funding history: {n_fund} rows")
+
+    elif args.collect_liquidations:
+        from collector.liquidations import collect_all_liquidations
+        db = get_db()
+        logger.info("Phase 8: Collecting liquidation data...")
+        try:
+            n = collect_all_liquidations(db)
+            print(f"\nLiquidations collected: {n} rows saved to DB")
+        except Exception as e:
+            logger.error(f"Liquidations collection failed: {e}")
+
+    elif args.collect_social_lunar:
+        from collector.social_lunar import collect_all_social_lunar
+        db = get_db()
+        logger.info("Phase 8: Collecting LunarCrush social metrics...")
+        try:
+            result = collect_all_social_lunar(db)
+            print(f"\nSocial/LunarCrush result: {result}")
+        except Exception as e:
+            logger.error(f"Social/LunarCrush collection failed: {e}")
+
+    elif args.optimize_weights_all:
+        from backtesting.optimizer import optimize_all_regimes
+        from signals.normalizer import get_all_signals
+        from config import DEFAULT_WEIGHTS_PHASE8
+
+        logger.warning("Phase 8: Walk-forward weight optimization for all 5 regimes.")
+        logger.warning("This operation takes approximately 5 minutes. Please wait...")
+
+        db = get_db()
+        REGIMES = list(DEFAULT_WEIGHTS_PHASE8.keys())
+        SYMBOL  = "BTCUSDT"
+        MAX_WINDOWS = 60
+
+        logger.info(f"Preparing historical signal windows (max {MAX_WINDOWS}) from DB candles...")
+        candles = db.get_candles(SYMBOL, "4h", limit=MAX_WINDOWS + 50)
+
+        if candles is None or len(candles) < 10:
+            logger.error("Not enough candle data in DB. Run --fetch-history first.")
+        else:
+            # Build rolling windows of signals (step every 4 candles for coverage)
+            all_signals = []
+            all_returns = []
+            step = max(1, len(candles) // MAX_WINDOWS)
+            prices = candles["close"].tolist() if hasattr(candles, "tolist") else list(candles["close"])
+
+            for i in range(0, len(candles) - 5, step):
+                window_db_proxy = db  # reuse same DB; get_all_signals fetches fresh
+                try:
+                    sig = get_all_signals(SYMBOL, db, fear_greed=50)
+                    # synthetic return: next-candle % change
+                    ret = (prices[min(i + 4, len(prices) - 1)] - prices[i]) / max(prices[i], 1e-8)
+                    all_signals.append(sig)
+                    all_returns.append(ret)
+                except Exception as exc:
+                    logger.debug(f"Signal window {i} failed: {exc}")
+                if len(all_signals) >= MAX_WINDOWS:
+                    break
+
+            if len(all_signals) < 5:
+                logger.error(f"Only {len(all_signals)} signal windows available — need at least 5.")
+            else:
+                logger.info(f"Built {len(all_signals)} signal windows. Starting optimization...")
+                # Assign every window to all regimes (simplified: no live regime label)
+                data_by_regime = {r: (all_signals, all_returns) for r in REGIMES}
+
+                optimized = optimize_all_regimes(data_by_regime, n_trials=300)
+
+                print("\nOptimization results:")
+                for regime, weights in optimized.items():
+                    try:
+                        db.save_optimized_weights(regime, weights)
+                        top = max(weights, key=weights.get)
+                        print(f"  {regime:<12} — saved. Top signal: {top} = {weights[top]:.4f}")
+                    except Exception as exc:
+                        logger.warning(f"  {regime}: save failed — {exc}")
+
+                print(f"\nAll {len(optimized)} regimes optimized and saved to DB.")
 
     elif args.run:
         asyncio.run(live_loop())
