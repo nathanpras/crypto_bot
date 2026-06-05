@@ -46,3 +46,45 @@ def test_optimize_all_regimes_each_sums_to_one():
     all_weights = optimize_all_regimes(data_by_regime, n_trials=3)
     for regime, weights in all_weights.items():
         assert abs(sum(weights.values()) - 1.0) < 0.01, f"{regime} sum={sum(weights.values())}"
+
+
+from backtesting.walk_forward import rolling_walk_forward_splits, is_consistent
+
+
+def test_rolling_walk_forward_returns_splits():
+    # 2 years daily data = 720 points, enough for 6+ windows
+    data = [{"idx": i, "value": i * 1.0} for i in range(720)]
+    splits = rolling_walk_forward_splits(data, train_months=9, val_months=3)
+    assert len(splits) >= 6, f"Expected >=6 splits, got {len(splits)}"
+
+
+def test_rolling_walk_forward_split_structure():
+    data = [{"idx": i} for i in range(720)]
+    splits = rolling_walk_forward_splits(data, train_months=9, val_months=3)
+    for split in splits:
+        assert "train" in split
+        assert "val" in split
+        assert "window_idx" in split
+        assert len(split["train"]) > 0
+        assert len(split["val"]) > 0
+
+
+def test_rolling_walk_forward_insufficient_data_returns_empty():
+    data = [{"idx": i} for i in range(100)]  # Too little data
+    splits = rolling_walk_forward_splits(data, train_months=9, val_months=3)
+    assert splits == []
+
+
+def test_is_consistent_passes_low_std():
+    scores = [0.62, 0.65, 0.60, 0.63, 0.61, 0.64]
+    assert is_consistent(scores, std_threshold=0.15) is True
+
+
+def test_is_consistent_fails_high_std():
+    scores = [0.90, 0.10, 0.85, 0.15, 0.80, 0.20]
+    assert is_consistent(scores, std_threshold=0.15) is False
+
+
+def test_is_consistent_requires_min_6_windows():
+    scores = [0.62, 0.63, 0.61, 0.60, 0.64]  # Only 5
+    assert is_consistent(scores, std_threshold=0.15) is False

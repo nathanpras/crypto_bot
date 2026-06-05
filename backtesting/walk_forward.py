@@ -8,11 +8,12 @@ from datetime import date
 from loguru import logger
 
 
-# Default split: train = Jan 2023 – Jun 2024, val = Jul 2024 – Dec 2024
-TRAIN_START = "2023-01-01"
-TRAIN_END   = "2024-06-30"
-VAL_START   = "2024-07-01"
-VAL_END     = "2024-12-31"
+# Split disesuaikan dengan data yang tersedia (mulai Jun 2024)
+# Train: 12 bulan pertama, Val: 6 bulan terakhir
+TRAIN_START = "2024-06-01"
+TRAIN_END   = "2025-05-31"
+VAL_START   = "2025-06-01"
+VAL_END     = "2025-12-31"
 
 # Deployment criteria
 MIN_VAL_SHARPE   = 0.8
@@ -100,3 +101,95 @@ def update_config_weights(weights: dict) -> bool:
         logger.info(f"  {k}: {v:.3f}")
 
     return True
+
+
+# ---------------------------------------------------------------------------
+# Phase 8 — Rolling Walk-Forward Helpers
+# ---------------------------------------------------------------------------
+
+def rolling_walk_forward_splits(
+    data: list,
+    train_months: int = 9,
+    val_months: int = 3,
+) -> list:
+    """
+    Generate rolling walk-forward splits from a flat list of data points.
+
+    Treats every element as one daily bar (30 bars ≈ 1 month).  Each split
+    contains a 'train' window of *train_months* × 30 bars immediately
+    followed by a 'val' window of *val_months* × 30 bars.  The window then
+    steps forward by *val_months* × 30 bars.
+
+    Returns a list of dicts::
+
+        [{"train": [...], "val": [...], "window_idx": int}, ...]
+
+    Returns an empty list when there is not enough data for at least 6
+    complete validation windows.
+
+    Parameters
+    ----------
+    data:
+        List of dicts.  No particular keys are required.
+    train_months:
+        Number of months in the training window (default 9).
+    val_months:
+        Number of months in the validation window / step size (default 3).
+    """
+    bars_per_month = 30
+    train_bars = train_months * bars_per_month
+    val_bars   = val_months  * bars_per_month
+    step_bars  = bars_per_month  # step one month at a time for maximum coverage
+
+    splits = []
+    window_idx = 0
+    start = 0
+
+    while True:
+        train_end = start + train_bars
+        val_end   = train_end + val_bars
+
+        if val_end > len(data):
+            break
+
+        splits.append(
+            {
+                "train":      data[start:train_end],
+                "val":        data[train_end:val_end],
+                "window_idx": window_idx,
+            }
+        )
+        window_idx += 1
+        start      += step_bars
+
+    # Require at least 6 complete validation windows
+    if len(splits) < 6:
+        return []
+
+    return splits
+
+
+def is_consistent(val_scores: list, std_threshold: float = 0.15) -> bool:
+    """
+    Return True when walk-forward results are considered consistent.
+
+    Consistency requires:
+    * At least 6 validation windows (``len(val_scores) >= 6``).
+    * The standard deviation of the scores is below *std_threshold*.
+
+    Parameters
+    ----------
+    val_scores:
+        List of float fitness scores from each walk-forward validation window.
+    std_threshold:
+        Maximum allowed standard deviation (default 0.15).
+    """
+    if len(val_scores) < 6:
+        return False
+
+    n    = len(val_scores)
+    mean = sum(val_scores) / n
+    variance = sum((x - mean) ** 2 for x in val_scores) / n
+    std  = variance ** 0.5
+
+    return std < std_threshold
