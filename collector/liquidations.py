@@ -75,11 +75,14 @@ def collect_all_liquidations(db) -> int:
     for symbol in COINS:
         data = fetch_liquidation_cascade(symbol)
         if data:
-            db.upsert_liquidation(symbol, {
-                "liq_long_usd": data["liq_long_24h"],
-                "liq_short_usd": data["liq_short_24h"],
-                "timestamp": data["timestamp"],
-            })
-            count += 1
+            try:
+                db.upsert_liquidation(symbol, {
+                    "liq_long_usd": data["liq_long_24h"],
+                    "liq_short_usd": data["liq_short_24h"],
+                    "timestamp": data["timestamp"],
+                })
+                count += 1
+            except Exception as e:
+                logger.warning(f"Failed to upsert liquidation for {symbol}: {e}")
     logger.info(f"Liquidations collected: {count}/{len(COINS)} symbols")
     return count
