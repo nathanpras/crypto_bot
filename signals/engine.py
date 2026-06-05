@@ -96,8 +96,11 @@ def calc_sentiment_score(fear_greed: int, funding_rate: float = 0) -> float:
 
 # ── Regime Detection ──────────────────────────────────────────
 
-def detect_regime(df_4h: pd.DataFrame) -> str:
-    """Classify market regime using ADX and ATR volatility."""
+def _detect_regime_legacy(df_4h: pd.DataFrame) -> str:
+    """Classify market regime using ADX and ATR volatility (Phase 6 style).
+    Returns: TRENDING_BULL | TRENDING_BEAR | RANGING | VOLATILE | TRANSITIONING
+    Used internally by score_coin for legacy REGIME_WEIGHTS lookup.
+    """
     if df_4h.empty or len(df_4h) < 50:
         return "TRANSITIONING"
 
@@ -129,6 +132,48 @@ def detect_regime(df_4h: pd.DataFrame) -> str:
         return "RANGING"
     else:
         return "TRANSITIONING"
+
+
+def detect_regime(df_4h) -> str:
+    """
+    Detect market regime from 4h candles DataFrame (Phase 8 style).
+    Returns: 'bull' | 'bear' | 'sideways' | 'volatile' | 'recovery'
+    """
+    if df_4h is None or len(df_4h) < 50:
+        return "sideways"
+
+    try:
+        import pandas_ta as _pta
+        closes = df_4h["close"]
+        ema50 = _pta.ema(closes, length=50)
+        ema200 = _pta.ema(closes, length=200)
+
+        if ema50 is None or ema200 is None:
+            return "sideways"
+
+        last_close = float(closes.iloc[-1])
+        e50 = float(ema50.iloc[-1])
+        e200 = float(ema200.iloc[-1])
+
+        # Volatility: ATR / price ratio
+        atr = _pta.atr(df_4h["high"], df_4h["low"], closes, length=14)
+        atr_pct = float(atr.iloc[-1]) / last_close if atr is not None else 0
+
+        # 30-bar price change
+        price_chg = (last_close - float(closes.iloc[-30])) / float(closes.iloc[-30]) if len(closes) >= 30 else 0
+
+        if atr_pct > 0.04:
+            return "volatile"
+        elif last_close > e50 > e200 and price_chg > 0.05:
+            return "bull"
+        elif last_close < e50 < e200 and price_chg < -0.05:
+            return "bear"
+        elif last_close > e50 and price_chg > 0.02:
+            return "recovery"
+        else:
+            return "sideways"
+    except Exception:
+        return "sideways"
 
 
 # ── Main Score Engine ─────────────────────────────────────────
@@ -170,8 +215,8 @@ def score_coin(symbol: str, fear_greed: int = 50,
     s["onchain_score"]   = calc_onchain_score(symbol, db)
     s["sentiment_score"] = calc_sentiment_score(fear_greed, funding_rate)
 
-    # Phase 6: detect regime first → use adaptive weights
-    regime  = detect_regime(df_4h)
+    # Phase 6: detect regime first → use adaptive weights (legacy ADX-based)
+    regime  = _detect_regime_legacy(df_4h)
     weights = get_regime_weights(regime)
 
     total = (
@@ -295,6 +340,52 @@ def score_coin(symbol: str, fear_greed: int = 50,
     db.upsert_signal(symbol, {**s, "total_score": total, "regime": regime})
 
     return result
+
+
+def get_regime_weights_from_db(regime: str, db) -> dict:
+    """
+    Load optimized weights for the given regime from DB.
+    Falls back to DEFAULT_WEIGHTS_PHASE8 if DB has no weights for this regime.
+    Validates all 32 signal IDs present. Normalizes if sum != 1.0.
+    """
+    from config import DEFAULT_WEIGHTS_PHASE8
+    from signals.registry import get_signal_ids
+
+    weights = db.get_optimized_weights(regime) if db is not None else {}
+
+    if not weights:
+        weights = DEFAULT_WEIGHTS_PHASE8.get(regime, DEFAULT_WEIGHTS_PHASE8["bull"]).copy()
+
+    signal_ids = get_signal_ids()
+    # Ensure all 32 signals present, fill missing with small default
+    for sid in signal_ids:
+        if sid not in weights:
+            weights[sid] = 0.01
+
+    # Normalize to sum=1.0
+    total = sum(weights.values())
+    if total > 0 and abs(total - 1.0) > 0.001:
+        weights = {k: v / total for k, v in weights.items()}
+
+    return weights
+
+
+def calc_composite_score_phase8(scores: dict, weights: dict) -> float:
+    """
+    Compute weighted sum of all 32 signal scores.
+    scores: dict{signal_id: float 0-100}
+    weights: dict{signal_id: float 0-1, sums to 1.0}
+    Returns float 0-100.
+    """
+    total = 0.0
+    w_sum = 0.0
+    for sid, w in weights.items():
+        s = scores.get(sid, 50.0)
+        total += s * w
+        w_sum += w
+    if w_sum == 0:
+        return 50.0
+    return float(max(0.0, min(100.0, total / w_sum * 1.0)))
 
 
 def scan_all_coins(fear_greed: int = 50,

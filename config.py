@@ -296,11 +296,30 @@ COIN_NAME_MAP = {
 }
 
 RSS_FEEDS = [
+    # Original 4
     "https://www.coindesk.com/arc/outboundfeeds/rss/",
     "https://cointelegraph.com/rss",
     "https://decrypt.co/feed",
     "https://cryptonews.com/news/feed/",
+    # Phase 7B: 10 additional free feeds
+    "https://bitcoinmagazine.com/.rss/full/",
+    "https://thedefiant.io/feed",
+    "https://blockworks.co/feed",
+    "https://www.theblock.co/rss.xml",
+    "https://cryptobriefing.com/feed/",
+    "https://ambcrypto.com/feed/",
+    "https://newsbtc.com/feed/",
+    "https://cryptopotato.com/feed/",
+    "https://beincrypto.com/feed/",
+    "https://u.today/rss",
 ]
+
+# ─── Phase 7B: VADER NLP Sentiment Thresholds ─────────────────
+VADER_THRESHOLDS = {
+    "strong_bullish":  0.35,   # compound >= +0.35 → bullish
+    "strong_bearish": -0.35,   # compound <= -0.35 → bearish
+    "neutral_band":    0.10,   # |compound| < 0.10 → neutral
+}
 
 # ─── Phase 4: Options Flow Scoring ───────────────────────────────────────────
 OPTIONS_SCORING = {
@@ -351,4 +370,64 @@ WHALE_SCORING = {
     "oi_surge_bullish":      20.0,
     "oi_drop_bearish":      -20.0,
     "funding_neutral_max":   0.02,
+}
+
+# ─── Phase 7D: Extended Macro Thresholds ─────────────────────
+STABLECOIN_THRESHOLDS = {
+    "strong_inflow":  3.0,   # 7d change > +3% → bullish +5
+    "mild_inflow":    1.0,   # 7d change > +1% → +2
+    "mild_outflow":  -1.0,   # 7d change < -1% → -2
+    "strong_outflow": -3.0,  # 7d change < -3% → -5
+}
+
+BYBIT_BASIS_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "BNBUSDT"]
+
+# Phase 8 default weights per regime (5 regimes × 32 signals)
+# Weights sum to 1.0 per regime. All 32 signal IDs must be present.
+DEFAULT_WEIGHTS_PHASE8 = {
+    "bull": {
+        "T1": 0.06, "T2": 0.04, "T3": 0.04, "T4": 0.03, "T5": 0.03,
+        "T6": 0.03, "T7": 0.02, "T8": 0.02, "T9": 0.02, "T10": 0.01,
+        "O1": 0.05, "O2": 0.04, "O3": 0.03, "O4": 0.02, "O5": 0.02,
+        "O6": 0.02, "O7": 0.02,
+        "S1": 0.04, "S2": 0.03, "S3": 0.02, "S4": 0.02, "S5": 0.02, "S6": 0.02,
+        "D1": 0.05, "D2": 0.04, "D3": 0.03, "D4": 0.02,
+        "M1": 0.04, "M2": 0.03, "M3": 0.03, "M4": 0.02, "M5": 0.09,
+    },
+    "bear": {
+        "T1": 0.04, "T2": 0.06, "T3": 0.05, "T4": 0.03, "T5": 0.04,
+        "T6": 0.03, "T7": 0.03, "T8": 0.03, "T9": 0.02, "T10": 0.01,
+        "O1": 0.04, "O2": 0.05, "O3": 0.03, "O4": 0.02, "O5": 0.04,
+        "O6": 0.02, "O7": 0.03,
+        "S1": 0.06, "S2": 0.03, "S3": 0.02, "S4": 0.02, "S5": 0.01, "S6": 0.01,
+        "D1": 0.06, "D2": 0.05, "D3": 0.03, "D4": 0.02,
+        "M1": 0.03, "M2": 0.02, "M3": 0.02, "M4": 0.01, "M5": 0.04,
+    },
+    "sideways": {
+        "T1": 0.03, "T2": 0.04, "T3": 0.04, "T4": 0.04, "T5": 0.03,
+        "T6": 0.04, "T7": 0.04, "T8": 0.05, "T9": 0.03, "T10": 0.02,
+        "O1": 0.03, "O2": 0.03, "O3": 0.02, "O4": 0.02, "O5": 0.03,
+        "O6": 0.02, "O7": 0.03,
+        "S1": 0.04, "S2": 0.04, "S3": 0.03, "S4": 0.03, "S5": 0.03, "S6": 0.03,
+        "D1": 0.04, "D2": 0.04, "D3": 0.03, "D4": 0.02,
+        "M1": 0.03, "M2": 0.03, "M3": 0.03, "M4": 0.02, "M5": 0.02,
+    },
+    "volatile": {
+        "T1": 0.03, "T2": 0.05, "T3": 0.04, "T4": 0.05, "T5": 0.03,
+        "T6": 0.03, "T7": 0.05, "T8": 0.04, "T9": 0.04, "T10": 0.02,
+        "O1": 0.03, "O2": 0.03, "O3": 0.02, "O4": 0.02, "O5": 0.05,
+        "O6": 0.02, "O7": 0.04,
+        "S1": 0.05, "S2": 0.03, "S3": 0.02, "S4": 0.02, "S5": 0.01, "S6": 0.01,
+        "D1": 0.06, "D2": 0.05, "D3": 0.04, "D4": 0.02,
+        "M1": 0.02, "M2": 0.02, "M3": 0.02, "M4": 0.01, "M5": 0.03,
+    },
+    "recovery": {
+        "T1": 0.06, "T2": 0.05, "T3": 0.04, "T4": 0.04, "T5": 0.05,
+        "T6": 0.03, "T7": 0.03, "T8": 0.03, "T9": 0.02, "T10": 0.01,
+        "O1": 0.05, "O2": 0.05, "O3": 0.04, "O4": 0.02, "O5": 0.04,
+        "O6": 0.02, "O7": 0.02,
+        "S1": 0.06, "S2": 0.03, "S3": 0.02, "S4": 0.02, "S5": 0.01, "S6": 0.01,
+        "D1": 0.05, "D2": 0.04, "D3": 0.03, "D4": 0.02,
+        "M1": 0.03, "M2": 0.02, "M3": 0.02, "M4": 0.01, "M5": 0.03,
+    },
 }
