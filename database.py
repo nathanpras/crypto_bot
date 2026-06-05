@@ -216,15 +216,16 @@ CREATE TABLE IF NOT EXISTS journal_trades (
 
 SCHEMA_PHASE4 = """
 CREATE TABLE IF NOT EXISTS coin_news (
-    id           VARCHAR PRIMARY KEY,
-    symbol       VARCHAR NOT NULL,
-    published_at TIMESTAMP NOT NULL,
-    title        VARCHAR,
-    sentiment    VARCHAR,
-    is_critical  BOOLEAN DEFAULT FALSE,
-    votes_pos    INTEGER DEFAULT 0,
-    votes_neg    INTEGER DEFAULT 0,
-    source       VARCHAR
+    id              VARCHAR PRIMARY KEY,
+    symbol          VARCHAR NOT NULL,
+    published_at    TIMESTAMP NOT NULL,
+    title           VARCHAR,
+    sentiment       VARCHAR,
+    vader_compound  DOUBLE,
+    is_critical     BOOLEAN DEFAULT FALSE,
+    votes_pos       INTEGER DEFAULT 0,
+    votes_neg       INTEGER DEFAULT 0,
+    source          VARCHAR
 );
 
 CREATE TABLE IF NOT EXISTS news_blocks (
@@ -260,6 +261,77 @@ CREATE TABLE IF NOT EXISTS social_metrics (
 );
 """
 
+SCHEMA_PHASE8 = """
+CREATE TABLE IF NOT EXISTS signal_registry (
+    signal_name    VARCHAR PRIMARY KEY,
+    category       VARCHAR,
+    update_freq    VARCHAR,
+    source         VARCHAR,
+    enabled        BOOLEAN DEFAULT TRUE,
+    last_updated   TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS optimized_weights (
+    regime         VARCHAR NOT NULL,
+    signal_name    VARCHAR NOT NULL,
+    weight         DOUBLE,
+    fitness_score  DOUBLE,
+    optimized_at   TIMESTAMP NOT NULL,
+    PRIMARY KEY (regime, signal_name, optimized_at)
+);
+
+CREATE TABLE IF NOT EXISTS liquidations (
+    symbol         VARCHAR NOT NULL,
+    timestamp      TIMESTAMP NOT NULL,
+    liq_long_usd   DOUBLE,
+    liq_short_usd  DOUBLE,
+    PRIMARY KEY (symbol, timestamp)
+);
+
+CREATE TABLE IF NOT EXISTS lunarcrush_metrics (
+    symbol         VARCHAR NOT NULL,
+    timestamp      TIMESTAMP NOT NULL,
+    galaxy_score   DOUBLE,
+    alt_rank       INTEGER,
+    social_volume  DOUBLE,
+    PRIMARY KEY (symbol, timestamp)
+);
+
+CREATE TABLE IF NOT EXISTS google_trends (
+    symbol         VARCHAR NOT NULL,
+    date           DATE NOT NULL,
+    interest       INTEGER,
+    PRIMARY KEY (symbol, date)
+);
+
+CREATE TABLE IF NOT EXISTS onchain_real (
+    asset              VARCHAR NOT NULL,
+    date               DATE NOT NULL,
+    active_addr        BIGINT,
+    tx_count           BIGINT,
+    exchange_inflow    DOUBLE,
+    exchange_outflow   DOUBLE,
+    nvt_ratio          DOUBLE,
+    PRIMARY KEY (asset, date)
+);
+
+CREATE TABLE IF NOT EXISTS reddit_sentiment (
+    symbol         VARCHAR NOT NULL,
+    date           DATE NOT NULL,
+    post_count     INTEGER,
+    avg_sentiment  DOUBLE,
+    bullish_pct    DOUBLE,
+    PRIMARY KEY (symbol, date)
+);
+
+CREATE TABLE IF NOT EXISTS funding_history (
+    symbol         VARCHAR NOT NULL,
+    timestamp      TIMESTAMP NOT NULL,
+    funding_rate   DOUBLE,
+    PRIMARY KEY (symbol, timestamp)
+);
+"""
+
 
 class Database:
     def __init__(self, path: str = DB_PATH):
@@ -275,6 +347,23 @@ class Database:
         self.conn.execute(SCHEMA_PHASE3)
         self.conn.execute(SCHEMA_PHASE4)
         self.conn.execute(SCHEMA_PHASE5)
+        self._migrate_phase7b()
+        self.conn.execute(SCHEMA_PHASE8)
+
+    def _migrate_phase7b(self):
+        """Add vader_compound to coin_news if missing (Phase 7B migration)."""
+        try:
+            cols = [r[0] for r in self.conn.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = 'coin_news'"
+            ).fetchall()]
+            if "vader_compound" not in cols:
+                self.conn.execute(
+                    "ALTER TABLE coin_news ADD COLUMN vader_compound DOUBLE"
+                )
+                logger.info("Migrated coin_news: added vader_compound column")
+        except Exception as e:
+            logger.debug(f"Phase 7B migration skipped: {e}")
 
     # ── Candles ──────────────────────────────────────────────
 
@@ -688,14 +777,15 @@ class Database:
         for item in items:
             self.conn.execute("""
                 INSERT OR REPLACE INTO coin_news
-                    (id, symbol, published_at, title, sentiment,
+                    (id, symbol, published_at, title, sentiment, vader_compound,
                      is_critical, votes_pos, votes_neg, source)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, [
                 item["id"], symbol,
                 item.get("published_at", datetime.utcnow()),
                 item.get("title", ""),
                 item.get("sentiment", "neutral"),
+                item.get("vader_compound"),   # None = not computed by VADER
                 item.get("is_critical", False),
                 item.get("votes_pos", 0),
                 item.get("votes_neg", 0),
@@ -705,12 +795,13 @@ class Database:
     def get_recent_news(self, symbol: str, hours: int = 24) -> list:
         cutoff = datetime.utcnow() - timedelta(hours=hours)
         rows = self.conn.execute("""
-            SELECT id, title, sentiment, is_critical, votes_pos, votes_neg
+            SELECT id, title, sentiment, vader_compound, is_critical, votes_pos, votes_neg
             FROM coin_news
             WHERE symbol = ? AND published_at >= ?
             ORDER BY published_at DESC
         """, [symbol, cutoff]).fetchall()
-        cols = ["id", "title", "sentiment", "is_critical", "votes_pos", "votes_neg"]
+        cols = ["id", "title", "sentiment", "vader_compound",
+                "is_critical", "votes_pos", "votes_neg"]
         return [dict(zip(cols, r)) for r in rows]
 
     def set_news_block(self, symbol: str, reason: str):
@@ -838,6 +929,178 @@ class Database:
                 "avg_funding":   round(float(result[2] or 0), 5),
             }
         return None
+
+    # ── Phase 8: Liquidations ────────────────────────────────────
+
+    def upsert_liquidation(self, symbol: str, data: dict):
+        self.conn.execute("""
+            INSERT OR REPLACE INTO liquidations
+                (symbol, timestamp, liq_long_usd, liq_short_usd)
+            VALUES (?, now(), ?, ?)
+        """, [symbol, data.get("liq_long_usd"), data.get("liq_short_usd")])
+
+    def get_latest_liquidation(self, symbol: str, max_age_hours: int = 6):
+        cutoff = datetime.utcnow() - timedelta(hours=max_age_hours)
+        result = self.conn.execute("""
+            SELECT liq_long_usd, liq_short_usd, timestamp
+            FROM liquidations
+            WHERE symbol = ? AND timestamp >= ?
+            ORDER BY timestamp DESC LIMIT 1
+        """, [symbol, cutoff]).fetchone()
+        if result:
+            return {"liq_long_usd": result[0], "liq_short_usd": result[1], "timestamp": result[2]}
+        return None
+
+    # ── Phase 8: On-Chain Real ────────────────────────────────────
+
+    def upsert_onchain_real(self, asset: str, data: dict):
+        self.conn.execute("""
+            INSERT OR REPLACE INTO onchain_real
+                (asset, date, active_addr, tx_count, exchange_inflow, exchange_outflow, nvt_ratio)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, [
+            asset, data.get("date"),
+            data.get("active_addr"), data.get("tx_count"),
+            data.get("exchange_inflow"), data.get("exchange_outflow"),
+            data.get("nvt_ratio"),
+        ])
+
+    def get_latest_onchain_real(self, asset: str, max_age_days: int = 2):
+        cutoff = (datetime.utcnow() - timedelta(days=max_age_days)).date()
+        result = self.conn.execute("""
+            SELECT active_addr, tx_count, exchange_inflow, exchange_outflow, nvt_ratio, date
+            FROM onchain_real
+            WHERE asset = ? AND date >= ?
+            ORDER BY date DESC LIMIT 1
+        """, [asset, cutoff]).fetchone()
+        if result:
+            return {
+                "active_addr": result[0], "tx_count": result[1],
+                "exchange_inflow": result[2], "exchange_outflow": result[3],
+                "nvt_ratio": result[4], "date": result[5],
+            }
+        return None
+
+    def get_onchain_real_history(self, asset: str, days: int = 30):
+        result = self.conn.execute("""
+            SELECT active_addr, tx_count, nvt_ratio, date
+            FROM onchain_real
+            WHERE asset = ?
+            ORDER BY date DESC LIMIT ?
+        """, [asset, days]).fetchall()
+        return [{"active_addr": r[0], "tx_count": r[1], "nvt_ratio": r[2], "date": r[3]}
+                for r in result]
+
+    # ── Phase 8: LunarCrush ───────────────────────────────────────
+
+    def upsert_lunarcrush(self, symbol: str, data: dict):
+        self.conn.execute("""
+            INSERT OR REPLACE INTO lunarcrush_metrics
+                (symbol, timestamp, galaxy_score, alt_rank, social_volume)
+            VALUES (?, now(), ?, ?, ?)
+        """, [symbol, data.get("galaxy_score"), data.get("alt_rank"), data.get("social_volume")])
+
+    def get_latest_lunarcrush(self, symbol: str, max_age_hours: int = 24):
+        cutoff = datetime.utcnow() - timedelta(hours=max_age_hours)
+        result = self.conn.execute("""
+            SELECT galaxy_score, alt_rank, social_volume, timestamp
+            FROM lunarcrush_metrics
+            WHERE symbol = ? AND timestamp >= ?
+            ORDER BY timestamp DESC LIMIT 1
+        """, [symbol, cutoff]).fetchone()
+        if result:
+            return {"galaxy_score": result[0], "alt_rank": result[1],
+                    "social_volume": result[2], "timestamp": result[3]}
+        return None
+
+    # ── Phase 8: Google Trends ────────────────────────────────────
+
+    def upsert_google_trends(self, symbol: str, data: dict):
+        self.conn.execute("""
+            INSERT OR REPLACE INTO google_trends (symbol, date, interest)
+            VALUES (?, ?, ?)
+        """, [symbol, data.get("date"), data.get("interest")])
+
+    def get_latest_google_trends(self, symbol: str, max_age_days: int = 7):
+        cutoff = (datetime.utcnow() - timedelta(days=max_age_days)).date()
+        result = self.conn.execute("""
+            SELECT interest, date FROM google_trends
+            WHERE symbol = ? AND date >= ?
+            ORDER BY date DESC LIMIT 1
+        """, [symbol, cutoff]).fetchone()
+        if result:
+            return {"interest": result[0], "date": result[1]}
+        return None
+
+    # ── Phase 8: Reddit Sentiment ─────────────────────────────────
+
+    def upsert_reddit_sentiment(self, symbol: str, data: dict):
+        self.conn.execute("""
+            INSERT OR REPLACE INTO reddit_sentiment
+                (symbol, date, post_count, avg_sentiment, bullish_pct)
+            VALUES (?, ?, ?, ?, ?)
+        """, [symbol, data.get("date"),
+              data.get("post_count"), data.get("avg_sentiment"), data.get("bullish_pct")])
+
+    def get_latest_reddit_sentiment(self, symbol: str, max_age_days: int = 2):
+        cutoff = (datetime.utcnow() - timedelta(days=max_age_days)).date()
+        result = self.conn.execute("""
+            SELECT post_count, avg_sentiment, bullish_pct, date
+            FROM reddit_sentiment
+            WHERE symbol = ? AND date >= ?
+            ORDER BY date DESC LIMIT 1
+        """, [symbol, cutoff]).fetchone()
+        if result:
+            return {"post_count": result[0], "avg_sentiment": result[1],
+                    "bullish_pct": result[2], "date": result[3]}
+        return None
+
+    # ── Phase 8: Funding History ──────────────────────────────────
+
+    def upsert_funding_history(self, symbol: str, data: dict):
+        self.conn.execute("""
+            INSERT OR REPLACE INTO funding_history (symbol, timestamp, funding_rate)
+            VALUES (?, ?, ?)
+        """, [symbol, data.get("timestamp", datetime.utcnow()), data.get("funding_rate")])
+
+    def get_funding_history(self, symbol: str, limit: int = 720):
+        result = self.conn.execute("""
+            SELECT funding_rate, timestamp FROM funding_history
+            WHERE symbol = ?
+            ORDER BY timestamp DESC LIMIT ?
+        """, [symbol, limit]).fetchall()
+        return [{"funding_rate": r[0], "timestamp": r[1]} for r in result]
+
+    def get_funding_30d_ma(self, symbol: str) -> float:
+        result = self.conn.execute("""
+            SELECT AVG(funding_rate) FROM funding_history
+            WHERE symbol = ?
+              AND timestamp >= now() - INTERVAL 30 DAY
+        """, [symbol]).fetchone()
+        return float(result[0]) if result and result[0] is not None else 0.0
+
+    # ── Phase 8: Optimized Weights ────────────────────────────────
+
+    def save_optimized_weights(self, regime: str, weights: dict, fitness_score: float = 0.0):
+        ts = datetime.utcnow()
+        for signal_name, weight in weights.items():
+            self.conn.execute("""
+                INSERT OR REPLACE INTO optimized_weights
+                    (regime, signal_name, weight, fitness_score, optimized_at)
+                VALUES (?, ?, ?, ?, ?)
+            """, [regime, signal_name, weight, fitness_score, ts])
+
+    def get_optimized_weights(self, regime: str) -> dict:
+        latest = self.conn.execute("""
+            SELECT MAX(optimized_at) FROM optimized_weights WHERE regime = ?
+        """, [regime]).fetchone()[0]
+        if latest is None:
+            return {}
+        rows = self.conn.execute("""
+            SELECT signal_name, weight FROM optimized_weights
+            WHERE regime = ? AND optimized_at = ?
+        """, [regime, latest]).fetchall()
+        return {r[0]: r[1] for r in rows}
 
 
 # Singleton
