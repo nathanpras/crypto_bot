@@ -1,0 +1,20 @@
+[Unit]
+Description=APEX Crypto Signal Scanner
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/CryptoAgent
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=/home/ubuntu/CryptoAgent/.env
+ExecStart=/usr/bin/python3 main.py --run-continuous
+Restart=always
+RestartSec=30
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=apex
+
+[Install]
+WantedBy=multi-user.target
