@@ -120,10 +120,14 @@ def run_scan_once():
             )
             guard = check_portfolio_guards(signal["symbol"])
 
+            msg = format_trade_for_telegram(calc, signal)
             print(f"\n{'═'*40}")
-            print(format_trade_for_telegram(calc, signal))
+            print(msg)
             if not guard["allowed"]:
                 print(f"⛔ BLOCKED: {guard['reason']}")
+            else:
+                send_signal_alert(msg)
+                logger.info(f"Telegram alert sent: {signal['symbol']}")
     else:
         print(f"\n  No signals this scan. Highest: {results[0]['symbol']} "
               f"at {results[0]['total_score']:.1f}/100")
