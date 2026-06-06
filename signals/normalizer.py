@@ -477,13 +477,17 @@ def get_all_signals(symbol: str, db, fear_greed: int = 50,
         current_prices = {}
         for sym in list(COINS.keys())[:10]:
             try:
-                result = db.conn.execute("""
+                # Get current close and close 6 candles ago (≈24h on 4h timeframe)
+                rows = db.conn.execute("""
                     SELECT close FROM candles
                     WHERE symbol = ? AND timeframe = '4h'
-                    ORDER BY timestamp DESC LIMIT 1
-                """, [sym]).fetchone()
-                if result:
-                    current_prices[sym] = float(result[0])
+                    ORDER BY timestamp DESC LIMIT 7
+                """, [sym]).fetchall()
+                if rows and len(rows) >= 2:
+                    price_now = float(rows[0][0])
+                    price_24h_ago = float(rows[min(6, len(rows) - 1)][0])
+                    if price_24h_ago > 0:
+                        current_prices[sym] = (price_now - price_24h_ago) / price_24h_ago * 100
             except Exception:
                 pass
         scores["M3"] = get_altseason_index(current_prices) if len(current_prices) >= 3 else 50.0

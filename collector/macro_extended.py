@@ -341,18 +341,19 @@ DEFILLAMA_DEX = "https://api.llama.fi/overview/dexs"
 def get_altseason_index(current_prices: dict) -> float:
     """
     M3: Altseason Index 0-100.
-    Measures what % of top alts have a higher price than BTC in the dict.
-    current_prices: {symbol: price_value} — all values on same scale.
+    Measures what % of top alts have outperformed BTC over the same period.
+    current_prices: {symbol: pct_change_24h} — 24h % change for each symbol.
+    Returns 0 if all alts underperform BTC, 100 if all outperform.
     """
-    btc_price = current_prices.get("BTCUSDT", 100.0)
-    if btc_price <= 0:
+    btc_chg = current_prices.get("BTCUSDT", None)
+    if btc_chg is None:
         return 50.0
 
     alt_symbols = [s for s in current_prices if s != "BTCUSDT"]
     if not alt_symbols:
         return 50.0
 
-    outperforming = sum(1 for s in alt_symbols if current_prices.get(s, 0) > btc_price)
+    outperforming = sum(1 for s in alt_symbols if current_prices.get(s, btc_chg) > btc_chg)
     ratio = outperforming / len(alt_symbols)
     return max(0.0, min(100.0, ratio * 100))
 

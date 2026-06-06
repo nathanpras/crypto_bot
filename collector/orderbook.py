@@ -2,7 +2,7 @@
 import requests
 from loguru import logger
 
-BYBIT_ORDERBOOK_URL = "https://api.bybit.com/v5/market/orderbook"
+BYBIT_ORDERBOOK_URL = "https://api.bytick.com/v5/market/orderbook"
 
 
 def fetch_orderbook_imbalance(symbol: str, depth: int = 25) -> float:
