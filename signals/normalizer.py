@@ -32,63 +32,61 @@ def _fear_greed_score(fear_greed: int) -> float:
 
 
 def _news_sentiment_score(symbol: str, db) -> float:
-    """S2: News sentiment — CryptoPanic vote ratio for recent 24h news."""
+    """S2: News headline sentiment from CoinDesk+CoinTelegraph RSS using VADER."""
     import requests
+    import xml.etree.ElementTree as ET
 
-    # Map symbol to CryptoPanic currency code
-    currency_map = {
-        "BTCUSDT": "BTC", "ETHUSDT": "ETH", "SOLUSDT": "SOL",
-        "XRPUSDT": "XRP", "BNBUSDT": "BNB", "ADAUSDT": "ADA",
-        "AVAXUSDT": "AVAX", "LINKUSDT": "LINK", "DOTUSDT": "DOT",
-        "ARBUSDT": "ARB", "OPUSDT": "OP", "NEARUSDT": "NEAR",
+    keyword_map = {
+        "BTCUSDT": ["bitcoin", "btc"],
+        "ETHUSDT": ["ethereum", "eth"],
+        "SOLUSDT": ["solana", "sol"],
+        "XRPUSDT": ["xrp", "ripple"],
+        "BNBUSDT": ["bnb", "binance"],
+        "ADAUSDT": ["cardano", "ada"],
+        "AVAXUSDT": ["avalanche", "avax"],
+        "LINKUSDT": ["chainlink", "link"],
+        "DOTUSDT": ["polkadot", "dot"],
+        "ARBUSDT": ["arbitrum", "arb"],
+        "OPUSDT": ["optimism"],
+        "NEARUSDT": ["near"],
+        "INJUSDT": ["injective", "inj"],
+        "SUIUSDT": ["sui"],
+        "APTUSDT": ["aptos", "apt"],
     }
-    currency = currency_map.get(symbol, symbol.replace("USDT", ""))
+    keywords = keyword_map.get(symbol, [symbol.replace("USDT", "").lower()])
+
+    RSS_FEEDS = [
+        "https://www.coindesk.com/arc/outboundfeeds/rss/",
+        "https://cointelegraph.com/rss",
+    ]
+
+    headlines = []
+    for feed_url in RSS_FEEDS:
+        try:
+            r = requests.get(feed_url, timeout=10, headers={"User-Agent": "APEX/1.0"})
+            if r.status_code != 200:
+                continue
+            root = ET.fromstring(r.content)
+            for item in root.findall(".//item"):
+                title_el = item.find("title")
+                if title_el is not None and title_el.text:
+                    headlines.append(title_el.text.lower())
+        except Exception:
+            continue
+
+    if not headlines:
+        return 50.0
+
+    # Filter to coin-specific headlines; fall back to all if too few
+    relevant = [h for h in headlines if any(kw in h for kw in keywords)]
+    sample = relevant if len(relevant) >= 3 else headlines[:30]
 
     try:
-        r = requests.get(
-            "https://cryptopanic.com/api/free/v1/posts/",
-            params={
-                "auth_token": "free",
-                "public": "true",
-                "currencies": currency,
-                "filter": "hot",
-            },
-            timeout=10,
-        )
-        if r.status_code != 200:
-            return 50.0
-
-        results = r.json().get("results", [])
-        if not results:
-            return 50.0
-
-        total_pos = 0
-        total_neg = 0
-        total_posts = 0
-
-        for post in results[:20]:  # Cap at 20 most recent
-            votes = post.get("votes", {})
-            pos = int(votes.get("positive", 0) or 0)
-            neg = int(votes.get("negative", 0) or 0)
-            total_pos += pos
-            total_neg += neg
-            total_posts += 1
-
-        if total_posts == 0:
-            return 50.0
-
-        total_votes = total_pos + total_neg
-        if total_votes < 5:
-            return 50.0  # Not enough votes to be meaningful
-
-        sentiment_ratio = total_pos / total_votes  # 0.0 to 1.0
-
-        # Map 0-1 ratio to 0-100 score
-        # 0.5 = neutral = 50
-        # 0.8+ = very positive = 80
-        # 0.2- = very negative = 20
-        score = sentiment_ratio * 100
-        # Clamp to reasonable range (extreme readings are rare)
+        from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+        analyzer = SentimentIntensityAnalyzer()
+        scores_list = [analyzer.polarity_scores(h)["compound"] for h in sample]
+        avg = sum(scores_list) / len(scores_list)
+        score = (avg + 1) / 2 * 100  # map [-1,1] → [0,100]
         return float(max(10.0, min(90.0, score)))
     except Exception:
         return 50.0
