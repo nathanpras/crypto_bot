@@ -13,11 +13,11 @@ from signals.technical import (
     calc_vwap_normalized, calc_volume_delta_normalized, calc_bb_squeeze_normalized,
 )
 from collector.orderbook import fetch_orderbook_imbalance, get_orderbook_score
-from collector.funding_history import get_funding_oscillator_score
+from collector.funding_history import get_funding_oscillator_score, get_funding_oscillator_score_bybit
 from collector.onchain_enhanced import get_mvrv_score, get_netflow_score
 from collector.onchain_real import get_real_onchain_score, compute_nvt_score
-from collector.liquidations import get_liquidation_cascade_score
-from collector.social_lunar import get_lunarcrush_score, get_google_trends_score, get_reddit_sentiment_score
+from collector.liquidations import get_liquidation_cascade_score, get_liquidation_score_bybit
+from collector.social_lunar import get_lunarcrush_score, get_google_trends_score, get_reddit_sentiment_score, get_social_score_coingecko
 from collector.macro_extended import get_altseason_index, get_dex_cex_ratio_score
 
 
@@ -410,14 +410,14 @@ def get_all_signals(symbol: str, db, fear_greed: int = 50,
     except Exception:
         scores["T9"] = 50.0
 
-    scores["T10"] = safe(get_funding_oscillator_score, symbol, db)
+    scores["T10"] = safe(get_funding_oscillator_score_bybit, symbol)
 
     # ── On-Chain (O1-O7) ───────────────────────────────────────
     scores["O1"] = safe(get_mvrv_score, symbol, db)
     scores["O2"] = safe(get_netflow_score, symbol, db)
     scores["O3"] = safe(get_real_onchain_score, symbol, db) if symbol == "BTCUSDT" else 50.0
     scores["O4"] = safe(get_real_onchain_score, symbol, db) if symbol == "ETHUSDT" else 50.0
-    scores["O5"] = safe(get_liquidation_cascade_score, symbol, db)
+    scores["O5"] = safe(get_liquidation_score_bybit, symbol)
     if symbol == "BTCUSDT":
         scores["O6"] = safe(compute_nvt_score, "BTC", db)
     elif symbol == "ETHUSDT":
@@ -430,7 +430,7 @@ def get_all_signals(symbol: str, db, fear_greed: int = 50,
     scores["S1"] = _fear_greed_score(fear_greed)
     scores["S2"] = safe(_news_sentiment_score, symbol, db)
     scores["S3"] = safe(_social_coingecko_score, symbol, db)
-    scores["S4"] = safe(get_lunarcrush_score, symbol, db)
+    scores["S4"] = safe(get_social_score_coingecko, symbol)
     scores["S5"] = safe(get_google_trends_score, symbol, db)
     scores["S6"] = safe(get_reddit_sentiment_score, symbol, db)
 

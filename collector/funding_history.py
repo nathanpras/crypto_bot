@@ -75,6 +75,48 @@ def get_funding_oscillator_score(symbol: str, db) -> float:
     else:                      return 15.0
 
 
+def get_funding_oscillator_score_bybit(symbol: str) -> float:
+    """
+    T10: Funding rate oscillator using Bybit free funding history (no API key needed).
+    Compares recent 7-day avg funding rate vs 30-day avg.
+    Negative funding (shorts pay) = bullish → high score.
+    """
+    import requests
+    try:
+        r = requests.get(
+            "https://api.bytick.com/v5/market/funding/history",
+            params={"category": "linear", "symbol": symbol, "limit": 200},
+            timeout=10,
+        )
+        r.raise_for_status()
+        items = r.json().get("result", {}).get("list", [])
+        if len(items) < 14:
+            return 50.0
+
+        rates = [float(item["fundingRate"]) for item in items]
+        # items[0] = most recent, items[-1] = oldest
+        # Bybit funds every 8h → 30 days = ~90 entries, 7 days = ~21 entries
+        recent_7d = rates[:21]
+        prior_30d = rates[:90]
+
+        avg_recent = sum(recent_7d) / len(recent_7d)
+        avg_30d = sum(prior_30d) / len(prior_30d)
+
+        # Deviation of recent vs long-term
+        deviation = avg_recent - avg_30d
+
+        # Score: funding going more negative = bullish
+        if avg_recent < -0.0003:   return 85.0   # Very negative funding = strong bullish
+        elif avg_recent < -0.0001: return 70.0
+        elif avg_recent < 0.0001:  return 52.0   # Near-zero = neutral
+        elif avg_recent < 0.0003:  return 38.0
+        elif avg_recent < 0.0005:  return 28.0
+        else:                       return 15.0   # Very positive = longs over-leveraged
+
+    except Exception:
+        return 50.0
+
+
 def collect_all_funding_history(db) -> int:
     """Collect 30d funding history for major perps. Returns count stored."""
     count = 0
