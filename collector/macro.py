@@ -168,17 +168,36 @@ def evaluate_f1_gate(macro_data: dict) -> dict:
         cache_entry = {"f1_pass": m2_ok, "m2_trend": m2.get("trend", "unknown"),
                        "cached_at": datetime.utcnow().isoformat()}
         _save_f1_cache(cache_entry)
+    elif m2_status == "no_key":
+        # FRED key not configured — pass F1, user opted out of M2 filter
+        m2_ok = True
+        logger.warning("FRED API key not set — skipping M2 filter, F1 passes by default")
     else:
-        # Fetch failed — load from cache
+        # Fetch failed — load from cache with staleness check
         cached = _load_f1_cache()
         if cached is not None:
-            m2_ok = cached.get("f1_pass", False)
-            logger.warning(f"FRED API unavailable — using cached F1 result "
-                           f"(cached_at={cached.get('cached_at', 'unknown')})")
+            cached_at_str = cached.get("cached_at", "")
+            cache_stale   = True
+            if cached_at_str:
+                try:
+                    cached_at  = datetime.fromisoformat(cached_at_str)
+                    age_days   = (datetime.utcnow() - cached_at).total_seconds() / 86400
+                    cache_stale = age_days > 7
+                except Exception:
+                    pass
+
+            if not cache_stale:
+                m2_ok = cached.get("f1_pass", False)
+                logger.warning(f"FRED API unavailable — using cached F1 result "
+                               f"(cached_at={cached_at_str})")
+            else:
+                # Cache too old — pass optimistically
+                m2_ok = True
+                logger.warning(f"FRED cache is stale (>7 days) — F1 passes optimistically")
         else:
-            # No cache at all — conservative FAIL
-            m2_ok = False
-            logger.warning("FRED API unavailable, no cache — conservative FAIL for F1 gate")
+            # No cache and API down — pass optimistically, log warning
+            m2_ok = True
+            logger.warning("FRED API unavailable, no cache — F1 passes optimistically")
 
     passed = m2_ok and fng_ok
 

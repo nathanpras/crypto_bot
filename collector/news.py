@@ -6,9 +6,15 @@ from email.utils import parsedate_to_datetime
 import requests
 from loguru import logger
 
+try:
+    from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer as _VaderAnalyzer
+    _vader = _VaderAnalyzer()
+except ImportError:
+    _vader = None
+
 from config import (
     COINS, CRITICAL_KEYWORDS, BULLISH_KEYWORDS, BEARISH_KEYWORDS,
-    COIN_NAME_MAP, RSS_FEEDS, NEWS_POLL_INTERVAL_SEC,
+    COIN_NAME_MAP, RSS_FEEDS, NEWS_POLL_INTERVAL_SEC, VADER_THRESHOLDS,
 )
 
 
@@ -18,14 +24,31 @@ def detect_critical_keywords(title: str) -> bool:
     return any(kw in t for kw in CRITICAL_KEYWORDS)
 
 
-def classify_sentiment(title: str) -> str:
-    """Classify berita sebagai bullish/bearish/neutral dari judul."""
+def classify_sentiment(title: str) -> tuple[str, float]:
+    """
+    Classify berita sebagai bullish/bearish/neutral.
+    Returns (sentiment_label, vader_compound).
+    Uses VADER NLP when available, falls back to keyword counting.
+    """
+    if _vader is not None:
+        scores   = _vader.polarity_scores(title)
+        compound = scores["compound"]
+        cfg      = VADER_THRESHOLDS
+        if compound >= cfg["strong_bullish"]:
+            label = "bullish"
+        elif compound <= cfg["strong_bearish"]:
+            label = "bearish"
+        else:
+            label = "neutral"
+        return label, round(compound, 4)
+
+    # Keyword fallback
     t    = title.lower()
     bull = sum(1 for kw in BULLISH_KEYWORDS if kw in t)
     bear = sum(1 for kw in BEARISH_KEYWORDS if kw in t)
-    if bull > bear:  return "bullish"
-    if bear > bull:  return "bearish"
-    return "neutral"
+    if bull > bear:  return "bullish", 0.5
+    if bear > bull:  return "bearish", -0.5
+    return "neutral", 0.0
 
 
 def coins_mentioned(title: str) -> list[str]:
@@ -105,23 +128,48 @@ def fetch_all_news() -> dict[str, list[dict]]:
 def build_db_item(title: str, published_at: datetime,
                   source: str, symbol: str) -> dict:
     """Buat DB-ready dict dari raw news item."""
+    sentiment, compound = classify_sentiment(title)
     return {
-        "id":           hashlib.md5(f"{symbol}{title}".encode()).hexdigest()[:16],
-        "title":        title,
-        "published_at": published_at,
-        "sentiment":    classify_sentiment(title),
-        "is_critical":  detect_critical_keywords(title),
-        "votes_pos":    0,
-        "votes_neg":    0,
-        "source":       source,
+        "id":             hashlib.md5(f"{symbol}{title}".encode()).hexdigest()[:16],
+        "title":          title,
+        "published_at":   published_at,
+        "sentiment":      sentiment,
+        "vader_compound": compound,
+        "is_critical":    detect_critical_keywords(title),
+        "votes_pos":      0,
+        "votes_neg":      0,
+        "source":         source,
     }
 
 
 def calc_news_modifier(symbol: str, db) -> float:
-    """Return score modifier -15 to +8 dari sentimen berita 24 jam."""
-    news    = db.get_recent_news(symbol, hours=24)
+    """
+    Return score modifier -15 to +8 dari sentimen berita 24 jam.
+    Uses VADER compound average when available, falls back to count-based.
+    """
+    news = db.get_recent_news(symbol, hours=24)
     if not news:
         return 0.0
+
+    # Try VADER compound average first
+    compounds = [n.get("vader_compound") for n in news
+                 if n.get("vader_compound") is not None]
+    if compounds:
+        avg_compound = sum(compounds) / len(compounds)
+        n_articles   = len(news)
+        # Scale by article count (more articles = more confident signal)
+        confidence = min(n_articles / 5.0, 1.0)   # full confidence at 5+ articles
+        if avg_compound >= 0.35:
+            return round(8.0 * confidence, 1)
+        elif avg_compound >= 0.15:
+            return round(4.0 * confidence, 1)
+        elif avg_compound <= -0.35:
+            return round(-15.0 * confidence, 1)
+        elif avg_compound <= -0.15:
+            return round(-8.0 * confidence, 1)
+        return 0.0
+
+    # Fallback: count-based (no VADER data stored)
     bullish = sum(1 for n in news if n["sentiment"] == "bullish")
     bearish = sum(1 for n in news if n["sentiment"] == "bearish")
     if bullish >= 3 and bearish == 0:  return  8.0

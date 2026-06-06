@@ -16,6 +16,7 @@ def get_exchange():
     exchange = ccxt.bybit({
         "enableRateLimit": True,
         "options": {"defaultType": "spot"},
+        "hostname": "bytick.com",   # api.bybit.com SSL issue dari Indonesia
     })
     return exchange
 
@@ -50,9 +51,9 @@ def fetch_ohlcv_full(symbol: str, timeframe: str,
                 "1d": 86_400_000, "1w": 604_800_000
             }.get(timeframe, 14_400_000)
 
-            if len(candles) < 1000:
-                break
             if since_ms > datetime.utcnow().timestamp() * 1000:
+                break
+            if len(candles) < 100:   # < 100 = genuinely no more data
                 break
 
             # Rate limit courtesy

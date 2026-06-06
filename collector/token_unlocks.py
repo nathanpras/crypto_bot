@@ -1,16 +1,20 @@
 # collector/token_unlocks.py
 """
-Token unlock calendar scraper dari Tokenomist.ai.
-Playwright digunakan karena halaman di-render dengan JavaScript.
-Graceful degradation: jika scrape gagal, penalty = 0.
+Token unlock calendar.
+Primary: DeFiLlama emission API (free, no Playwright required).
+Fallback: Tokenomist.ai via Playwright (optional, skipped if not installed).
+Graceful degradation: jika semua gagal, penalty = 0.
 """
 import re
 import time
+import requests
 from datetime import date, datetime, timedelta
 from loguru import logger
 
 from config import COINS, UNLOCK_PENALTIES, UNLOCK_LARGE_THRESHOLD
 from database import get_db
+
+DEFILLAMA_PROTOCOL_BASE = "https://api.llama.fi/protocol"
 
 
 # Mapping symbol → slug di Tokenomist.ai
@@ -34,6 +38,64 @@ TOKENOMIST_SLUGS = {
     "POLUSDT":  "polygon",
     # BTC dan ETH tidak punya scheduled token unlocks
 }
+
+
+def fetch_unlocks_defillama(symbol: str) -> list:
+    """
+    Fetch token unlock schedule from DeFiLlama protocol API.
+    DeFiLlama includes vesting/unlock data in protocol detail responses.
+    Returns list of unlock dicts (same schema as Tokenomist scraper).
+    """
+    slug = TOKENOMIST_SLUGS.get(symbol)
+    if not slug:
+        return []
+
+    try:
+        r = requests.get(f"{DEFILLAMA_PROTOCOL_BASE}/{slug}", timeout=15)
+        if r.status_code != 200:
+            return []
+        data = r.json()
+
+        unlocks = []
+        # DeFiLlama doesn't have a dedicated unlock endpoint but
+        # "tokenBreakdowns" or "raises" can hint at vesting schedules.
+        # We use "raises" + "unlocks" fields if present.
+        raw_unlocks = data.get("unlocks", []) or []
+        total_supply = float(data.get("totalSupply", 0) or 0)
+
+        for u in raw_unlocks:
+            try:
+                unlock_ts   = u.get("timestamp") or u.get("date")
+                unlock_pct  = float(u.get("noOfTokens", 0) or 0)
+                if total_supply > 0:
+                    unlock_pct = unlock_pct / total_supply * 100
+
+                if isinstance(unlock_ts, (int, float)):
+                    unlock_dt = date.fromtimestamp(unlock_ts)
+                elif isinstance(unlock_ts, str):
+                    unlock_dt = datetime.strptime(unlock_ts[:10], "%Y-%m-%d").date()
+                else:
+                    continue
+
+                if unlock_dt < date.today():
+                    continue
+
+                unlocks.append({
+                    "unlock_date":       unlock_dt,
+                    "unlock_amount_usd": 0.0,   # DeFiLlama doesn't provide USD value here
+                    "unlock_pct_supply": round(unlock_pct, 2),
+                    "category":          u.get("type", "unknown"),
+                })
+            except Exception:
+                continue
+
+        if unlocks:
+            logger.debug(f"DeFiLlama unlocks {symbol}: {len(unlocks)} events")
+        return unlocks
+
+    except Exception as e:
+        logger.debug(f"DeFiLlama unlock fetch failed for {symbol}: {e}")
+        return []
 
 
 def scrape_tokenomist(symbol: str) -> list:
@@ -120,22 +182,29 @@ def scrape_tokenomist(symbol: str) -> list:
 
 def collect_all_token_unlocks():
     """
-    Scrape token unlock calendar untuk semua coin yang ada di TOKENOMIST_SLUGS.
-    Simpan ke DB. Skip gracefully jika scrape gagal.
+    Fetch token unlock calendar for all coins.
+    Strategy: DeFiLlama API first (fast, no Playwright), Tokenomist fallback.
+    Skip gracefully if all sources fail.
     """
     db = get_db()
-    logger.info("Collecting token unlock calendar...")
+    logger.info("Collecting token unlock calendar (DeFiLlama primary)...")
 
     for symbol in TOKENOMIST_SLUGS:
         if symbol not in COINS:
             continue
         try:
-            unlocks = scrape_tokenomist(symbol)
+            # Try DeFiLlama first (no browser required)
+            unlocks = fetch_unlocks_defillama(symbol)
+
+            # Fallback to Playwright scraper if DeFiLlama returned nothing
+            if not unlocks:
+                unlocks = scrape_tokenomist(symbol)
+
             for unlock in unlocks:
                 db.upsert_token_unlock(symbol, unlock)
             if unlocks:
                 logger.info(f"  {symbol}: {len(unlocks)} unlock events saved")
-            time.sleep(2.0)
+            time.sleep(0.5)   # lighter delay since DeFiLlama is an API, not scraping
         except Exception as e:
             logger.warning(f"  {symbol} unlock collection failed: {e}")
 

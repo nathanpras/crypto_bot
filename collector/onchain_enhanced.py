@@ -162,14 +162,15 @@ def fetch_coinmetrics(asset: str) -> dict:
     Asset: 'btc' atau 'eth'. Rate limit: 10 req/menit — includes sleep.
     """
     try:
+        from datetime import datetime, timedelta
+        start = (datetime.utcnow() - timedelta(days=365)).strftime("%Y-%m-%d")
         r = requests.get(
             f"{COINMETRICS_BASE}/timeseries/asset-metrics",
             params={
-                "assets":    asset,
-                "metrics":   "CapMVRVCur,FlowNetInvNtv",
-                "frequency": "1d",
-                "limit":     7,
-                "pretty":    "true",
+                "assets":     asset,
+                "metrics":    "CapMVRVCur,FlowNetInvNtv",
+                "frequency":  "1d",
+                "start_time": start,
             },
             timeout=15
         )
@@ -353,51 +354,98 @@ def collect_all_onchain(full: bool = False):
 
 
 def get_mvrv_score(symbol: str, db) -> float:
-    """O1: MVRV ratio score 0-100 from onchain table."""
+    """O1: MVRV score. Uses onchain table if available, else 365-day price MA proxy."""
     asset_map = {"BTCUSDT": "btc", "ETHUSDT": "eth"}
     asset = asset_map.get(symbol)
     if not asset:
         return 50.0
 
-    result = db.conn.execute("""
-        SELECT mvrv_ratio FROM onchain WHERE asset = ?
-        ORDER BY date DESC LIMIT 1
-    """, [asset]).fetchone()
+    # Try CoinMetrics data first
+    try:
+        result = db.conn.execute("""
+            SELECT mvrv_ratio FROM onchain WHERE asset = ?
+            ORDER BY date DESC LIMIT 1
+        """, [asset]).fetchone()
+        if result and result[0] is not None:
+            mvrv = float(result[0])
+            if mvrv < 0.8:    return 88.0
+            elif mvrv < 1.0:  return 78.0
+            elif mvrv < 1.5:  return 62.0
+            elif mvrv < 2.0:  return 50.0
+            elif mvrv < 2.5:  return 38.0
+            elif mvrv < 3.0:  return 25.0
+            else:              return 12.0
+    except Exception:
+        pass
 
-    if not result or result[0] is None:
+    # Fallback: price / 365-day avg as MVRV proxy
+    try:
+        rows = db.conn.execute("""
+            SELECT close FROM candles
+            WHERE symbol = ? AND timeframe = '1d'
+            ORDER BY timestamp DESC LIMIT 365
+        """, [symbol]).fetchall()
+        if len(rows) < 30:
+            return 50.0
+        prices = [float(r[0]) for r in rows]
+        current = prices[0]
+        avg = sum(prices) / len(prices)
+        mvrv_proxy = current / avg
+        if mvrv_proxy < 0.7:    return 88.0
+        elif mvrv_proxy < 0.85: return 75.0
+        elif mvrv_proxy < 1.0:  return 62.0
+        elif mvrv_proxy < 1.3:  return 50.0
+        elif mvrv_proxy < 1.6:  return 38.0
+        elif mvrv_proxy < 2.0:  return 25.0
+        else:                    return 12.0
+    except Exception:
         return 50.0
-
-    mvrv = float(result[0])
-    if mvrv < 0.8:    return 88.0
-    elif mvrv < 1.0:  return 78.0
-    elif mvrv < 1.5:  return 62.0
-    elif mvrv < 2.0:  return 50.0
-    elif mvrv < 2.5:  return 38.0
-    elif mvrv < 3.0:  return 25.0
-    else:              return 12.0
 
 
 def get_netflow_score(symbol: str, db) -> float:
-    """O2: Exchange netflow score 0-100. Negative netflow (outflow) = bullish."""
+    """O2: Netflow score. Uses onchain table if available, else 30-day price trend proxy."""
     asset_map = {"BTCUSDT": "btc", "ETHUSDT": "eth"}
     asset = asset_map.get(symbol)
     if not asset:
         return 50.0
 
-    from datetime import datetime, timedelta
-    cutoff = (datetime.utcnow() - timedelta(days=7)).date()
-    result = db.conn.execute("""
-        SELECT AVG(exch_netflow) FROM onchain
-        WHERE asset = ? AND date >= ?
-    """, [asset, cutoff]).fetchone()
+    # Try CoinMetrics data first
+    try:
+        from datetime import datetime, timedelta
+        cutoff = (datetime.utcnow() - timedelta(days=7)).date()
+        result = db.conn.execute("""
+            SELECT AVG(exch_netflow) FROM onchain
+            WHERE asset = ? AND date >= ?
+        """, [asset, cutoff]).fetchone()
+        if result and result[0] is not None:
+            netflow = float(result[0])
+            if netflow < -5000:   return 85.0
+            elif netflow < -1000: return 72.0
+            elif netflow < 0:     return 60.0
+            elif netflow < 1000:  return 45.0
+            elif netflow < 5000:  return 30.0
+            else:                  return 15.0
+    except Exception:
+        pass
 
-    if not result or result[0] is None:
+    # Fallback: 30-day price trend as netflow proxy
+    # Rising price trend = likely accumulation (outflow) = bullish
+    try:
+        rows = db.conn.execute("""
+            SELECT close FROM candles
+            WHERE symbol = ? AND timeframe = '1d'
+            ORDER BY timestamp DESC LIMIT 30
+        """, [symbol]).fetchall()
+        if len(rows) < 14:
+            return 50.0
+        prices = [float(r[0]) for r in rows]
+        chg_30d = (prices[0] - prices[-1]) / prices[-1] * 100
+        if chg_30d > 20:    return 72.0
+        elif chg_30d > 8:   return 62.0
+        elif chg_30d > 2:   return 55.0
+        elif chg_30d > -2:  return 48.0
+        elif chg_30d > -8:  return 38.0
+        elif chg_30d > -20: return 28.0
+        else:                return 18.0
+    except Exception:
         return 50.0
-
-    netflow = float(result[0])
-    if netflow < -5000:   return 85.0
-    elif netflow < -1000: return 72.0
-    elif netflow < 0:     return 60.0
-    elif netflow < 1000:  return 45.0
-    elif netflow < 5000:  return 30.0
-    else:                  return 15.0

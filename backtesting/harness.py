@@ -396,16 +396,15 @@ def run_backtest(
                 logger.debug(f"  {symbol}: insufficient signal history, skipping")
                 continue
 
-            price_df = db.get_candles(symbol, "4h")
+            price_df = db.get_candles(symbol, "4h", limit=5000)
+            price_df["timestamp"] = pd.to_datetime(price_df["timestamp"])
             price_df = price_df[
-                (price_df["timestamp"] >= date_from) &
-                (price_df["timestamp"] <= date_to)
+                (price_df["timestamp"] >= pd.Timestamp(date_from)) &
+                (price_df["timestamp"] <= pd.Timestamp(date_to))
             ].reset_index(drop=True)
 
             if price_df.empty or len(price_df) < 50:
                 continue
-
-            price_df["timestamp"] = pd.to_datetime(price_df["timestamp"])
             merged = price_df.set_index("timestamp").join(
                 scores.rename("score"), how="left"
             ).fillna(50)

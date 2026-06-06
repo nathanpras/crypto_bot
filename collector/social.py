@@ -91,21 +91,18 @@ def collect_all_social(db) -> None:
             ORDER BY date DESC LIMIT 1
         """, [symbol, date_30d_ago]).fetchone()
 
-        # Fall back to most recent if no 30d data
+        # If no 30d historical data, use 0 change (not today's data as baseline)
         if not prev_30d:
-            prev_row = db.conn.execute("""
-                SELECT twitter_followers, reddit_subscribers
-                FROM social_metrics WHERE symbol = ? ORDER BY date DESC LIMIT 1
-            """, [symbol]).fetchone()
-            prev_30d = prev_row
-
-        prev_tw = prev_30d[0] if prev_30d and prev_30d[0] else data["twitter_followers"]
-        prev_rd = prev_30d[1] if prev_30d and prev_30d[1] else data["reddit_subscribers"]
+            prev_tw = None
+            prev_rd = None
+        else:
+            prev_tw = prev_30d[0] if prev_30d[0] else None
+            prev_rd = prev_30d[1] if prev_30d[1] else None
 
         tw_change = ((data["twitter_followers"] - prev_tw) / prev_tw * 100
-                     if prev_tw and prev_tw > 0 else 0.0)
+                     if prev_tw is not None and prev_tw > 0 else 0.0)
         rd_change = ((data["reddit_subscribers"] - prev_rd) / prev_rd * 100
-                     if prev_rd and prev_rd > 0 else 0.0)
+                     if prev_rd is not None and prev_rd > 0 else 0.0)
 
         score = calc_social_score(tw_change, rd_change, data["github_commits_4w"])
         db.upsert_social_metrics(symbol, {
