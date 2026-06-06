@@ -3,6 +3,7 @@ data/
 logs/
 __pycache__/
 *.pyc
+Downloads/
 *.pyo
 .pytest_cache/
 *.egg-info/
