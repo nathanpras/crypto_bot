@@ -13,10 +13,11 @@ from database import get_db
 
 
 def get_exchange():
-    exchange = ccxt.bybit({
+    # Binance dipakai untuk historical OHLCV — data sama, tidak blokir cloud IP
+    # Bybit (api.bybit.com / bytick.com) blokir Google Cloud / AWS IP
+    exchange = ccxt.binance({
         "enableRateLimit": True,
         "options": {"defaultType": "spot"},
-        "hostname": "bytick.com",   # api.bybit.com SSL issue dari Indonesia
     })
     return exchange
 
