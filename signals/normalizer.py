@@ -17,7 +17,7 @@ from collector.funding_history import get_funding_oscillator_score, get_funding_
 from collector.onchain_enhanced import get_mvrv_score, get_netflow_score
 from collector.onchain_real import get_real_onchain_score, compute_nvt_score
 from collector.liquidations import get_liquidation_cascade_score, get_liquidation_score_bybit
-from collector.social_lunar import get_lunarcrush_score, get_google_trends_score, get_reddit_sentiment_score, get_social_score_coingecko
+from collector.social_lunar import get_lunarcrush_score, get_google_trends_score, get_reddit_sentiment_score, get_social_score_coingecko, get_stocktwits_sentiment_score
 from collector.macro_extended import get_altseason_index, get_dex_cex_ratio_score
 
 
@@ -460,7 +460,7 @@ def get_all_signals(symbol: str, db, fear_greed: int = 50,
     scores["S3"] = safe(_social_coingecko_score, symbol, db)
     scores["S4"] = safe(get_social_score_coingecko, symbol)
     scores["S5"] = safe(get_google_trends_score, symbol, db)
-    scores["S6"] = safe(get_reddit_sentiment_score, symbol, db)
+    scores["S6"] = safe(get_stocktwits_sentiment_score, symbol)
 
     # ── Derivatives (D1-D4) ────────────────────────────────────
     scores["D1"] = safe(_oi_funding_score, symbol, db)

@@ -172,6 +172,67 @@ def get_reddit_sentiment_score(symbol: str, db) -> float:
     return max(0.0, min(100.0, combined))
 
 
+STOCKTWITS_SYMBOL_MAP = {
+    "BTCUSDT": "BTC.X", "ETHUSDT": "ETH.X", "SOLUSDT": "SOL.X",
+    "XRPUSDT": "XRP.X", "BNBUSDT": "BNB.X", "ADAUSDT": "ADA.X",
+    "AVAXUSDT": "AVAX.X", "LINKUSDT": "LINK.X", "DOTUSDT": "DOT.X",
+    "ARBUSDT": "ARB.X", "OPUSDT": "OP.X", "NEARUSDT": "NEAR.X",
+    "INJUSDT": "INJ.X", "SUIUSDT": "SUI.X", "APTUSDT": "APT.X",
+}
+
+
+def get_stocktwits_sentiment_score(symbol: str) -> float:
+    """
+    S6: Sentiment from Stocktwits message stream (free, no key, global access).
+    Counts Bullish vs Bearish tagged messages → sentiment ratio → 0-100 score.
+    """
+    import requests
+    ticker = STOCKTWITS_SYMBOL_MAP.get(symbol)
+    if not ticker:
+        return 50.0
+    try:
+        r = requests.get(
+            f"https://api.stocktwits.com/api/2/streams/symbol/{ticker}.json",
+            headers={"User-Agent": "APEX/1.0"},
+            timeout=10,
+        )
+        if r.status_code == 429:
+            return 50.0  # Rate limited
+        r.raise_for_status()
+        messages = r.json().get("messages", [])
+        if not messages:
+            return 50.0
+
+        bullish = 0
+        bearish = 0
+        for msg in messages:
+            sentiment = (msg.get("entities", {}) or {}).get("sentiment")
+            if not sentiment:
+                continue
+            basic = (sentiment.get("basic") or "").lower()
+            if basic == "bullish":
+                bullish += 1
+            elif basic == "bearish":
+                bearish += 1
+
+        total = bullish + bearish
+        if total < 3:
+            return 50.0  # Not enough tagged messages
+
+        bull_pct = bullish / total * 100
+        # bull_pct is already 0-100
+        # 70%+ bullish = crowded longs = slightly contrarian bearish
+        # 30%- bullish = fear = contrarian bullish
+        # Apply mild contrarian weighting
+        if bull_pct > 75:    return 35.0   # Excessive bullishness = warning
+        elif bull_pct > 60:  return 45.0
+        elif bull_pct > 45:  return 55.0
+        elif bull_pct > 30:  return 65.0
+        else:                 return 78.0   # Excessive fear = opportunity
+    except Exception:
+        return 50.0
+
+
 COINGECKO_ID_MAP = {
     "BTCUSDT": "bitcoin", "ETHUSDT": "ethereum", "SOLUSDT": "solana",
     "XRPUSDT": "ripple", "BNBUSDT": "binancecoin", "ADAUSDT": "cardano",
