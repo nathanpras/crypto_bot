@@ -43,8 +43,8 @@ def fetch_stablecoin_flows() -> dict:
         major = {"tether", "usd-coin", "dai", "binance-usd", "true-usd", "frax"}
         total_now = 0.0
         for p in pegs:
-            if p.get("gecko_id", "").lower() in major or \
-               p.get("name", "").lower() in {"tether", "usd coin", "dai", "busd"}:
+            if (p.get("gecko_id") or "").lower() in major or \
+               (p.get("name") or "").lower() in {"tether", "usd coin", "dai", "busd"}:
                 circulating = p.get("circulating", {})
                 if isinstance(circulating, dict):
                     total_now += float(circulating.get("peggedUSD", 0) or 0)

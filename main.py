@@ -92,12 +92,18 @@ def run_scan_once():
 
     for r in results:
         score  = r.get("total_score", 0)
+        if r.get("blocked"):
+            regime    = "BLOCKED (F2)"
+            price_str = f"{'—':>12}"
+        else:
+            regime    = r.get("regime", "—")
+            price_str = f"{r.get('price', 0):>12.4f}"
         status = "🌪 STORM" if r.get("strong") else \
                  "🔔 SIGNAL" if r.get("fired") else \
                  "⚫ —"
         print(f"{r['symbol']:<12} {score:>6.1f} "
-              f"{r.get('regime','—'):<16} "
-              f"{r.get('price',0):>12.4f} {status}")
+              f"{regime:<16} "
+              f"{price_str} {status}")
 
     fired = [r for r in results if r.get("fired")]
     if fired:
