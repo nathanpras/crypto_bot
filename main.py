@@ -450,6 +450,14 @@ def main():
             logger.warning(f"  Funding history failed: {e}")
             n_fund = 0
 
+        logger.info("  [5/5] Options (Deribit)...")
+        try:
+            from collector.options import collect_all_options
+            collect_all_options(db)
+            logger.info("  Options: BTC + ETH updated")
+        except Exception as e:
+            logger.warning(f"  Options failed: {e}")
+
         print("\nPhase 8 collection summary:")
         print(f"  Liquidations   : {n_liq} rows")
         print(f"  On-chain       : {r_onchain}")

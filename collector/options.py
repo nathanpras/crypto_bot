@@ -65,10 +65,20 @@ def get_options_modifier(symbol: str, db) -> float:
         return 0.0
     metrics = db.get_latest_options(symbol)
     if not metrics:
-        return 0.0
+        # Fallback: fetch live dari Deribit kalau DB kosong
+        currency = OPTIONS_SYMBOLS[symbol]
+        data = fetch_options_data(currency)
+        if data:
+            try:
+                db.upsert_options_metrics(symbol, data)
+            except Exception:
+                pass
+            metrics = data
+        else:
+            return 0.0
     return calc_options_modifier(
-        metrics["put_call_ratio"] or 1.0,
-        metrics["skew_25d"] or 0.0,
+        metrics.get("put_call_ratio") or 1.0,
+        metrics.get("skew_25d") or 0.0,
     )
 
 
