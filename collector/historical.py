@@ -13,21 +13,29 @@ from database import get_db
 
 
 def get_exchange():
-    # Binance dipakai untuk historical OHLCV — data sama, tidak blokir cloud IP
-    # Bybit (api.bybit.com / bytick.com) blokir Google Cloud / AWS IP
-    exchange = ccxt.binance({
+    # KuCoin dipakai untuk historical OHLCV — tidak blokir Google Cloud IP
+    # Bybit blokir cloud IP via CloudFront, Binance blokir US-located IP
+    exchange = ccxt.kucoin({
         "enableRateLimit": True,
         "options": {"defaultType": "spot"},
     })
     return exchange
 
 
+def _symbol_to_kucoin(symbol: str) -> str:
+    """Convert BTCUSDT → BTC-USDT for KuCoin format."""
+    if symbol.endswith("USDT") and "-" not in symbol:
+        return symbol[:-4] + "-USDT"
+    return symbol
+
+
 def fetch_ohlcv_full(symbol: str, timeframe: str,
                      days: int, exchange) -> pd.DataFrame:
     """
     Fetch full historical OHLCV data going back `days` days.
-    Handles pagination automatically (Binance limit = 1000 candles per request).
+    Handles pagination automatically (KuCoin limit = 1500 candles per request).
     """
+    kucoin_symbol = _symbol_to_kucoin(symbol)
     since_ms = int((datetime.utcnow() - timedelta(days=days)).timestamp() * 1000)
     all_candles = []
     page = 0
@@ -35,7 +43,7 @@ def fetch_ohlcv_full(symbol: str, timeframe: str,
     while True:
         try:
             candles = exchange.fetch_ohlcv(
-                symbol, timeframe, since=since_ms, limit=1000
+                kucoin_symbol, timeframe, since=since_ms, limit=1500
             )
             if not candles:
                 break
@@ -141,12 +149,13 @@ def fetch_incremental(symbol: str, timeframe: str, exchange=None):
     db = get_db()
     latest = db.get_latest_timestamp(symbol, timeframe)
 
+    kucoin_symbol = _symbol_to_kucoin(symbol)
     if latest is None:
         days = HISTORICAL_PERIODS.get(timeframe, 365)
         df = fetch_ohlcv_full(symbol, timeframe, days, exchange)
     else:
         since_ms = int(latest.timestamp() * 1000)
-        candles = exchange.fetch_ohlcv(symbol, timeframe, since=since_ms, limit=500)
+        candles = exchange.fetch_ohlcv(kucoin_symbol, timeframe, since=since_ms, limit=500)
         if not candles:
             return pd.DataFrame()
         df = pd.DataFrame(candles,
