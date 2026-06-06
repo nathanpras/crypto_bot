@@ -184,7 +184,7 @@ COINGECKO_ID_MAP = {
 
 
 def get_social_score_coingecko(symbol: str) -> float:
-    """S4: Social score proxy from CoinGecko community data (no API key)."""
+    """S4: Sentiment score from CoinGecko user votes + price momentum (no API key)."""
     import requests
     coin_id = COINGECKO_ID_MAP.get(symbol)
     if not coin_id:
@@ -193,33 +193,38 @@ def get_social_score_coingecko(symbol: str) -> float:
         r = requests.get(
             f"https://api.coingecko.com/api/v3/coins/{coin_id}",
             params={
-                "localization": "false", "tickers": "false",
-                "market_data": "false", "community_data": "true",
+                "localization": "false",
+                "tickers": "false",
+                "market_data": "true",
+                "community_data": "false",
                 "developer_data": "false",
             },
             timeout=10,
         )
         r.raise_for_status()
-        community = r.json().get("community_data", {})
+        data = r.json()
 
-        twitter = int(community.get("twitter_followers", 0) or 0)
-        reddit_subs = int(community.get("reddit_subscribers", 0) or 0)
-        reddit_active = int(community.get("reddit_accounts_active_48h", 0) or 0)
+        # Sentiment votes (CoinGecko community bullish/bearish votes)
+        up_pct = float(data.get("sentiment_votes_up_percentage") or 50)
+        # up_pct is already 0-100 (percentage of bullish votes)
 
-        # Normalize to rough benchmarks for top coins
-        # BTC: ~6M twitter, ~5M reddit subs
-        # Score based on activity ratio: active/subs
-        if reddit_subs > 0:
-            activity_ratio = reddit_active / reddit_subs
-            # High activity = high engagement = bullish sentiment
-            if activity_ratio > 0.005:   return 75.0
-            elif activity_ratio > 0.002: return 62.0
-            elif activity_ratio > 0.001: return 52.0
-            else:                         return 45.0
-        elif twitter > 1_000_000:
-            return 60.0  # Large following = healthy community
-        else:
-            return 50.0
+        # Price momentum: 24h + 7d change as confirmation
+        mkt = data.get("market_data", {})
+        chg_24h = float((mkt.get("price_change_percentage_24h") or 0))
+        chg_7d  = float((mkt.get("price_change_percentage_7d")  or 0))
+
+        # Momentum score
+        mom = 50.0
+        if chg_24h > 5:      mom = 72
+        elif chg_24h > 2:    mom = 62
+        elif chg_24h > 0:    mom = 55
+        elif chg_24h > -2:   mom = 45
+        elif chg_24h > -5:   mom = 35
+        else:                 mom = 22
+
+        # Combine sentiment votes (60%) + momentum (40%)
+        combined = up_pct * 0.6 + mom * 0.4
+        return float(max(0.0, min(100.0, combined)))
     except Exception:
         return 50.0
 

@@ -93,15 +93,43 @@ def _news_sentiment_score(symbol: str, db) -> float:
 
 
 def _social_coingecko_score(symbol: str, db) -> float:
-    """S3: Social score from CoinGecko (social_metrics table)."""
+    """S3: Social relevance from CoinGecko market cap rank + 7d momentum."""
+    import requests
+    from collector.social_lunar import COINGECKO_ID_MAP
+    coin_id = COINGECKO_ID_MAP.get(symbol)
+    if not coin_id:
+        return 50.0
     try:
-        result = db.conn.execute("""
-            SELECT social_score FROM social_metrics
-            WHERE symbol = ? ORDER BY date DESC LIMIT 1
-        """, [symbol]).fetchone()
-        if not result or result[0] is None:
-            return 50.0
-        return float(max(0.0, min(100.0, float(result[0]))))
+        r = requests.get(
+            f"https://api.coingecko.com/api/v3/coins/{coin_id}",
+            params={"localization": "false", "tickers": "false",
+                    "market_data": "true", "community_data": "false",
+                    "developer_data": "false"},
+            timeout=10,
+        )
+        r.raise_for_status()
+        data = r.json()
+        mkt = data.get("market_data", {})
+        rank = int(data.get("market_cap_rank") or 50)
+        chg_7d = float(mkt.get("price_change_percentage_7d") or 0)
+
+        # Higher rank (lower number) = more social attention
+        if rank <= 5:      rank_score = 70
+        elif rank <= 20:   rank_score = 62
+        elif rank <= 50:   rank_score = 55
+        elif rank <= 100:  rank_score = 48
+        else:              rank_score = 42
+
+        # 7d momentum as trend confirmation
+        if chg_7d > 15:    trend = 80
+        elif chg_7d > 7:   trend = 68
+        elif chg_7d > 2:   trend = 58
+        elif chg_7d > -2:  trend = 50
+        elif chg_7d > -7:  trend = 38
+        elif chg_7d > -15: trend = 28
+        else:              trend = 18
+
+        return float(max(0.0, min(100.0, rank_score * 0.4 + trend * 0.6)))
     except Exception:
         return 50.0
 
