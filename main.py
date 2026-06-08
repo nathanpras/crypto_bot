@@ -10,6 +10,7 @@
 #   python3 main.py --macro            Check macro gates (F1+F2)
 # ============================================================
 
+import os
 import sys
 import asyncio
 import argparse
@@ -143,6 +144,9 @@ def run_scan_once():
         print(f"{'SIGNALS TO REVIEW':^55}")
         print("─"*55)
         portfolio_usd = get_portfolio_usd()
+        is_paper = os.getenv("PAPER_TRADING", "true").lower() == "true"
+        logger.info(f"{len(fired)} signal(s) fired this scan")
+
         for signal in fired:
             calc = calc_position_size(
                 signal["symbol"],
@@ -150,18 +154,24 @@ def run_scan_once():
                 signal["total_score"],
                 portfolio_usd
             )
-            guard = check_portfolio_guards(signal["symbol"])
-
             msg = format_trade_for_telegram(calc, signal)
             print(f"\n{'═'*40}")
             print(msg)
-            if not guard["allowed"]:
-                print(f"⛔ BLOCKED: {guard['reason']}")
-            else:
-                send_signal_alert(msg)
-                logger.info(f"Telegram alert sent: {signal['symbol']}")
 
-            # Auto-record every fired signal as paper sim trade
+            if is_paper:
+                # Paper mode: kirim semua signal tanpa batasan posisi
+                send_signal_alert(msg)
+                logger.info(f"Paper alert sent: {signal['symbol']}")
+            else:
+                # Live mode: tetap pakai portfolio guard
+                guard = check_portfolio_guards(signal["symbol"])
+                if not guard["allowed"]:
+                    print(f"⛔ BLOCKED: {guard['reason']}")
+                else:
+                    send_signal_alert(msg)
+                    logger.info(f"Live alert sent: {signal['symbol']}")
+
+            # Auto-record semua signal ke paper sim (selalu, tanpa terkecuali)
             try:
                 _record_paper_sim(calc, signal)
             except Exception as e:
