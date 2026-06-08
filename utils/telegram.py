@@ -278,6 +278,114 @@ def send_scan_summary(results: list, macro: dict, f1: dict, f2: dict) -> bool:
     return send("\n".join(lines))
 
 
+def send_paper_sim_update(trade: dict) -> bool:
+    """Kirim notifikasi saat paper sim trade ditutup."""
+    sym    = trade["symbol"].replace("USDT", "")
+    status = trade["status"]
+    profit = trade.get("profit_idr", 0)
+    note   = trade.get("result_note", "")
+    score  = trade.get("signal_score", 0)
+
+    icons  = {"WIN_FULL": "🎯", "WIN_PARTIAL": "✅", "LOSS": "❌", "EXPIRED": "⏰"}
+    labels = {
+        "WIN_FULL":    "TP1 + TP2 tercapai!",
+        "WIN_PARTIAL": "TP1 tercapai (sisa kena stop)",
+        "LOSS":        "Stop loss",
+        "EXPIRED":     "Waktu habis",
+    }
+    icon  = icons.get(status, "ℹ️")
+    label = labels.get(status, status)
+    sign  = "+" if profit >= 0 else ""
+    rp    = lambda v: f"Rp {round(v / 1000) * 1000:,.0f}"
+
+    text = (
+        f"{icon} <b>Paper Sim — {sym} | {label}</b>\n"
+        f"Signal score: {score:.0f}/100\n"
+        f"Hasil: <b>{sign}{rp(profit)}</b>\n"
+        f"<i>{note}</i>"
+    )
+    return send(text)
+
+
+def send_paper_report(history) -> bool:
+    """Kirim Bot Trading History Simulation ke Telegram."""
+    import pandas as pd
+
+    if history is None or (hasattr(history, 'empty') and history.empty):
+        return send(
+            "📊 <b>Bot Trading History Simulation</b>\n\n"
+            "Belum ada trade yang tercatat. Signal pertama belum masuk."
+        )
+
+    closed  = history[~history["status"].isin(["OPEN", "TP1_HIT"])]
+    open_df = history[history["status"].isin(["OPEN", "TP1_HIT"])]
+
+    total   = len(closed)
+    wins    = len(closed[closed["status"].isin(["WIN_FULL", "WIN_PARTIAL"])])
+    losses  = len(closed[closed["status"] == "LOSS"])
+    expired = len(closed[closed["status"] == "EXPIRED"])
+    wr      = (wins / total * 100) if total > 0 else 0
+    total_pnl = float(closed["profit_idr"].sum()) if not closed.empty else 0
+
+    sign_pnl = "+" if total_pnl >= 0 else ""
+    rp = lambda v: f"Rp {round(abs(v) / 1000) * 1000:,.0f}"
+
+    lines = [
+        "📊 <b>Bot Trading History Simulation</b>",
+        "Modal simulasi: Rp 1.000.000 / trade",
+        "══════════════════════════════",
+        "",
+        f"Total trade  : {total}",
+        f"Win rate     : {wr:.0f}%  ({wins} win · {losses} loss · {expired} expired)",
+        f"Total P&L    : <b>{sign_pnl}{rp(total_pnl)}</b>",
+        "",
+        "──────────────────────────────",
+    ]
+
+    if not closed.empty:
+        lines.append("<code>No  Coin    Skor  Hasil          P&L</code>")
+        lines.append("<code>────────────────────────────────────</code>")
+
+        for i, (_, row) in enumerate(closed.iterrows(), 1):
+            sym    = row["symbol"].replace("USDT", "")
+            score  = int(row["signal_score"]) if row["signal_score"] else 0
+            status = row["status"]
+            profit = float(row["profit_idr"] or 0)
+
+            hasil_map = {
+                "WIN_FULL":    "🎯 TP1+TP2",
+                "WIN_PARTIAL": "✅ TP1",
+                "LOSS":        "❌ Stop",
+                "EXPIRED":     "⏰ Expired",
+            }
+            hasil   = hasil_map.get(status, status)
+            sign    = "+" if profit >= 0 else "-"
+            pnl_str = f"{sign}{rp(profit)}"
+            lines.append(
+                f"<code>{i:<3} {sym:<7} {score:<5} {hasil:<14} {pnl_str}</code>"
+            )
+
+        best_idx  = closed["profit_idr"].idxmax()
+        worst_idx = closed["profit_idr"].idxmin()
+        best  = closed.loc[best_idx]
+        worst = closed.loc[worst_idx]
+        lines += [
+            "",
+            f"🏆 Terbaik  : {best['symbol'].replace('USDT','')} +{rp(best['profit_idr'])}",
+            f"💀 Terburuk : {worst['symbol'].replace('USDT','')} -{rp(abs(worst['profit_idr']))}",
+        ]
+
+    if not open_df.empty:
+        open_syms = ", ".join(
+            f"{r['symbol'].replace('USDT','')} ({'TP1✅' if r['status']=='TP1_HIT' else 'Open'})"
+            for _, r in open_df.iterrows()
+        )
+        lines.append(f"\n<i>⏳ Masih open: {open_syms}</i>")
+
+    lines.append("\n<i>Ketik /paper-report kapan saja untuk update terbaru</i>")
+    return send("\n".join(lines))
+
+
 def get_updates(offset: int = 0) -> list:
     """
     Poll Telegram getUpdates untuk command baru.

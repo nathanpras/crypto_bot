@@ -43,12 +43,34 @@ from collector.historical import fetch_all_historical
 from collector.macro import fetch_all_macro
 from signals.engine import scan_all_coins
 from risk.manager import calc_position_size, check_portfolio_guards, format_trade_for_telegram, get_portfolio_usd
-from utils.telegram import send_signal_alert, send_system_status, send_daily_report, send_scan_summary
+from utils.telegram import send_signal_alert, send_system_status, send_daily_report, send_scan_summary, send_paper_sim_update, send_paper_report
 from config import COINS, SIGNAL_THRESHOLD
 from collector.onchain_enhanced import collect_all_onchain
 from collector.narrative import collect_all_tvl
 from collector.token_unlocks import collect_all_token_unlocks
 from collector.macro_extended import collect_all_extended
+
+
+_PAPER_SIM_HOLD_DAYS = {
+    "TRENDING_BULL": 42, "TRENDING_BEAR": 28, "RANGING": 56,
+    "VOLATILE": 28, "TRANSITIONING": 42,
+}
+
+def _record_paper_sim(calc: dict, signal: dict):
+    """Record every fired signal as a paper simulation trade."""
+    regime   = signal.get("regime", "TRANSITIONING")
+    max_hold = _PAPER_SIM_HOLD_DAYS.get(regime, 42)
+    get_db().record_paper_sim_trade({
+        "symbol":       calc["symbol"],
+        "signal_score": signal.get("total_score", 0),
+        "regime":       regime,
+        "entry_price":  calc["entry_price"],
+        "stop_price":   calc["stop_price"],
+        "tp1_price":    calc["tp1_price"],
+        "tp2_price":    calc["tp2_price"],
+        "position_idr": 1_000_000,
+        "max_hold_days": max_hold,
+    })
 
 
 # ── Scan once ─────────────────────────────────────────────────
@@ -106,6 +128,15 @@ def run_scan_once():
               f"{regime:<16} "
               f"{price_str} {status}")
 
+    # Check open paper sim trades first (update results from price movement)
+    try:
+        newly_closed = get_db().check_paper_sim_trades()
+        for t in newly_closed:
+            send_paper_sim_update(t)
+            logger.info(f"Paper sim closed: {t['symbol']} {t['status']} Rp {t['profit_idr']:,.0f}")
+    except Exception as e:
+        logger.warning(f"Paper sim check failed: {e}")
+
     fired = [r for r in results if r.get("fired")]
     if fired:
         print("\n" + "─"*55)
@@ -129,6 +160,12 @@ def run_scan_once():
             else:
                 send_signal_alert(msg)
                 logger.info(f"Telegram alert sent: {signal['symbol']}")
+
+            # Auto-record every fired signal as paper sim trade
+            try:
+                _record_paper_sim(calc, signal)
+            except Exception as e:
+                logger.warning(f"Failed to record paper sim: {e}")
     else:
         print(f"\n  No signals this scan. Highest: {results[0]['symbol']} "
               f"at {results[0]['total_score']:.1f}/100")
@@ -358,6 +395,8 @@ def main():
                         help="Fetch LunarCrush social metrics")
     parser.add_argument("--optimize-weights-all", action="store_true",
                         help="Walk-forward optimize signal weights for all 5 regimes and save to DB (~5 min)")
+    parser.add_argument("--paper-report", action="store_true",
+                        help="Kirim laporan Bot Trading History Simulation ke Telegram")
 
     args = parser.parse_args()
 
@@ -374,6 +413,11 @@ def main():
 
     elif args.scan_once:
         run_scan_once()
+
+    elif args.paper_report:
+        history = get_db().get_paper_sim_history(90)
+        send_paper_report(history)
+        logger.info("Paper sim report sent to Telegram")
 
     elif args.status:
         show_status()

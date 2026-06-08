@@ -139,6 +139,26 @@ CREATE TABLE IF NOT EXISTS portfolio (
     daily_pnl_usd   DOUBLE,
     daily_pnl_pct   DOUBLE
 );
+
+-- Paper trading simulation (auto-record every fired signal)
+CREATE TABLE IF NOT EXISTS paper_sim_trades (
+    id            INTEGER,
+    symbol        VARCHAR,
+    signal_score  DOUBLE,
+    regime        VARCHAR,
+    entry_price   DOUBLE,
+    stop_price    DOUBLE,
+    tp1_price     DOUBLE,
+    tp2_price     DOUBLE,
+    position_idr  DOUBLE,
+    max_hold_days INTEGER,
+    status        VARCHAR,
+    tp1_hit       BOOLEAN,
+    opened_at     TIMESTAMP,
+    closed_at     TIMESTAMP,
+    profit_idr    DOUBLE,
+    result_note   VARCHAR
+);
 """
 
 SCHEMA_PHASE2 = """
@@ -1091,6 +1111,142 @@ class Database:
                     (regime, signal_name, weight, fitness_score, optimized_at)
                 VALUES (?, ?, ?, ?, ?)
             """, [regime, signal_name, weight, fitness_score, ts])
+
+    # ── Paper Simulation Trades ───────────────────────────────────
+
+    def record_paper_sim_trade(self, data: dict) -> int:
+        new_id = self.conn.execute(
+            "SELECT COALESCE(MAX(id), 0) + 1 FROM paper_sim_trades"
+        ).fetchone()[0]
+        self.conn.execute("""
+            INSERT INTO paper_sim_trades VALUES (
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', FALSE, now(), NULL, NULL, NULL
+            )
+        """, [new_id, data["symbol"], data["signal_score"], data["regime"],
+              data["entry_price"], data["stop_price"], data["tp1_price"], data["tp2_price"],
+              data["position_idr"], data["max_hold_days"]])
+        logger.info(f"Paper sim trade recorded: {data['symbol']} #{new_id}")
+        return new_id
+
+    def get_open_paper_sim_trades(self) -> pd.DataFrame:
+        return self.conn.execute("""
+            SELECT * FROM paper_sim_trades
+            WHERE status IN ('OPEN', 'TP1_HIT')
+            ORDER BY opened_at
+        """).df()
+
+    def _set_paper_sim_tp1(self, trade_id: int):
+        self.conn.execute(
+            "UPDATE paper_sim_trades SET status='TP1_HIT', tp1_hit=TRUE WHERE id=?",
+            [trade_id]
+        )
+
+    def _close_paper_sim(self, trade_id: int, status: str, profit_idr: float, note: str):
+        self.conn.execute("""
+            UPDATE paper_sim_trades
+            SET status=?, profit_idr=?, result_note=?, closed_at=now()
+            WHERE id=?
+        """, [status, profit_idr, note, trade_id])
+
+    def check_paper_sim_trades(self) -> list:
+        """
+        Check all open paper sim trades against candle data.
+        Returns list of dicts for newly closed trades.
+        """
+        open_trades = self.get_open_paper_sim_trades()
+        if open_trades.empty:
+            return []
+
+        closed = []
+        for _, trade in open_trades.iterrows():
+            trade_id  = int(trade["id"])
+            symbol    = trade["symbol"]
+            entry     = float(trade["entry_price"])
+            stop      = float(trade["stop_price"])
+            tp1       = float(trade["tp1_price"])
+            tp2       = float(trade["tp2_price"])
+            pos_idr   = float(trade["position_idr"])
+            tp1_hit   = bool(trade["tp1_hit"])
+            opened_at = trade["opened_at"]
+            max_days  = int(trade["max_hold_days"])
+
+            candles = self.conn.execute(f"""
+                SELECT timestamp, high, low, close
+                FROM candles
+                WHERE symbol = '{symbol}' AND timeframe = '4h'
+                AND timestamp > '{opened_at}'
+                ORDER BY timestamp ASC
+            """).df()
+
+            outcome = None
+            for _, c in candles.iterrows():
+                hi = float(c["high"])
+                lo = float(c["low"])
+
+                if not tp1_hit:
+                    if lo <= stop:
+                        outcome = ("LOSS", -pos_idr * 0.10,
+                                   f"Stop loss tercapai di ${stop:.4f}")
+                        break
+                    if hi >= tp1:
+                        tp1_hit = True
+                        self._set_paper_sim_tp1(trade_id)
+                else:
+                    if hi >= tp2:
+                        profit = (pos_idr * 0.5 * (tp1 / entry - 1) +
+                                  pos_idr * 0.5 * (tp2 / entry - 1))
+                        outcome = ("WIN_FULL", profit, "TP1 + TP2 keduanya tercapai 🎯")
+                        break
+                    if lo <= stop:
+                        profit = pos_idr * 0.5 * (tp1 / entry - 1)
+                        outcome = ("WIN_PARTIAL", profit,
+                                   "TP1 tercapai, sisa posisi kena stop")
+                        break
+
+            # Check expiry if still open
+            if outcome is None and opened_at is not None:
+                age_days = (datetime.utcnow() -
+                            pd.Timestamp(opened_at).to_pydatetime().replace(tzinfo=None)
+                            ).days
+                if age_days >= max_days:
+                    last = self.conn.execute(f"""
+                        SELECT close FROM candles
+                        WHERE symbol = '{symbol}' AND timeframe = '4h'
+                        ORDER BY timestamp DESC LIMIT 1
+                    """).fetchone()
+                    current = float(last[0]) if last else entry
+                    pnl_pct = (current - entry) / entry
+                    if tp1_hit:
+                        profit = (pos_idr * 0.5 * (tp1 / entry - 1) +
+                                  pos_idr * 0.5 * pnl_pct)
+                    else:
+                        profit = pos_idr * pnl_pct
+                    sign = f"+{profit:,.0f}" if profit >= 0 else f"{profit:,.0f}"
+                    outcome = ("EXPIRED", profit,
+                               f"Maks hold {max_days} hari, keluar di ${current:.4f} (Rp {sign})")
+
+            if outcome:
+                status, profit_idr, note = outcome
+                self._close_paper_sim(trade_id, status, profit_idr, note)
+                closed.append({
+                    "id":           trade_id,
+                    "symbol":       symbol,
+                    "signal_score": float(trade["signal_score"]),
+                    "regime":       trade["regime"],
+                    "entry_price":  entry,
+                    "status":       status,
+                    "profit_idr":   profit_idr,
+                    "result_note":  note,
+                })
+
+        return closed
+
+    def get_paper_sim_history(self, days: int = 90) -> pd.DataFrame:
+        return self.conn.execute(f"""
+            SELECT * FROM paper_sim_trades
+            WHERE opened_at >= now() - INTERVAL '{int(days)} days'
+            ORDER BY opened_at DESC
+        """).df()
 
     def get_optimized_weights(self, regime: str) -> dict:
         latest = self.conn.execute("""
