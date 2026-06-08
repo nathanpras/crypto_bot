@@ -41,22 +41,16 @@ def calc_position_size(symbol: str, entry_price: float,
     if portfolio_usd is None:
         portfolio_usd = get_portfolio_usd()
 
-    tier     = COINS.get(symbol, {}).get("tier", 3)
-    base_risk = RISK_PER_TRADE.get(tier, 0.01)
+    tier      = COINS.get(symbol, {}).get("tier", 3)
+    stop_pct  = STOP_LOSS_PCT.get(tier, 0.10)
 
     # Perfect Storm multiplier
     size_mult = PERFECT_STORM_MULTIPLIER if signal_score >= SIGNAL_STRONG else 1.0
 
-    # Only use the TRADING portion of portfolio for position sizing
-    trading_pct = PORTFOLIO_ALLOCATION["category_kings"] + PORTFOLIO_ALLOCATION["moonshots"]
-    trading_portfolio = portfolio_usd * trading_pct
-
-    risk_pct = base_risk * size_mult
-    risk_usd = trading_portfolio * risk_pct
-    stop_pct = STOP_LOSS_PCT.get(tier, 0.10)
-
-    # Position size from risk
-    position_usd = risk_usd / stop_pct
+    # Position = full portfolio (Rp 1.000.000), scaled by Perfect Storm if applicable
+    position_usd = portfolio_usd * size_mult
+    risk_pct     = stop_pct   # risiko = stop loss % dari posisi
+    risk_usd     = position_usd * stop_pct
     quantity     = position_usd / entry_price
 
     # Stop and targets
