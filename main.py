@@ -187,6 +187,62 @@ def run_scan_once():
     logger.info("Scan summary sent to Telegram")
 
 
+# ── Command polling (cron-friendly) ──────────────────────────
+
+async def poll_commands_once():
+    """
+    Poll Telegram untuk pesan baru, handle semua command, lalu keluar.
+    Dipakai via cron setiap 5 menit agar user bisa kirim command tanpa --run.
+    """
+    from trade_journal.bot import handle_command
+    from utils.telegram import get_updates, send
+
+    db     = get_db()
+    offset = _load_poll_offset()
+    loop   = asyncio.get_event_loop()
+    handled = 0
+
+    try:
+        updates = await loop.run_in_executor(None, lambda o=offset: get_updates(o))
+        for update in updates:
+            offset  = update["update_id"] + 1
+            message = update.get("message", {})
+            chat_id = str(message.get("chat", {}).get("id", ""))
+            allowed = str(os.getenv("TELEGRAM_CHAT_ID", "0"))
+            if chat_id != allowed:
+                continue
+            text = message.get("text", "").strip()
+            if text.startswith("/"):
+                try:
+                    await handle_command(text, db, send)
+                    handled += 1
+                except Exception as e:
+                    logger.error(f"Command error '{text}': {e}")
+                    send(f"❌ Error: {e}")
+    except Exception as e:
+        logger.error(f"Poll error: {e}")
+    finally:
+        _save_poll_offset(offset)
+
+    logger.info(f"poll-commands: {handled} command(s) handled (offset={offset})")
+
+
+def _poll_offset_path():
+    return Path("data") / ".tg_poll_offset"
+
+def _load_poll_offset() -> int:
+    try:
+        return int(_poll_offset_path().read_text().strip())
+    except Exception:
+        return 0
+
+def _save_poll_offset(offset: int):
+    try:
+        _poll_offset_path().write_text(str(offset))
+    except Exception:
+        pass
+
+
 # ── Live mode ─────────────────────────────────────────────────
 
 async def live_loop():
@@ -407,6 +463,8 @@ def main():
                         help="Walk-forward optimize signal weights for all 5 regimes and save to DB (~5 min)")
     parser.add_argument("--paper-report", action="store_true",
                         help="Kirim laporan Bot Trading History Simulation ke Telegram")
+    parser.add_argument("--poll-commands", action="store_true",
+                        help="Poll Telegram selama 30 detik, handle command lalu keluar")
 
     args = parser.parse_args()
 
@@ -604,6 +662,9 @@ def main():
                         logger.warning(f"  {regime}: save failed — {exc}")
 
                 print(f"\nAll {len(optimized)} regimes optimized and saved to DB.")
+
+    elif args.poll_commands:
+        asyncio.run(poll_commands_once())
 
     elif args.run:
         asyncio.run(live_loop())

@@ -83,13 +83,29 @@ async def handle_command(text: str, db, send_fn) -> None:
             return
         await cmd_unblock(parts[1].upper(), db, send_fn)
 
+    elif cmd in ("/paper", "/paper-report", "/paperreport"):
+        await cmd_paper_report(db, send_fn)
+
+    elif cmd in ("/help", "/start"):
+        send_fn(
+            "🤖 <b>APEX Bot — Command yang tersedia:</b>\n\n"
+            "<b>📊 Laporan</b>\n"
+            "<code>/status</code> — lihat paper sim yang masih open\n"
+            "<code>/paper</code> — laporan Bot Trading History Simulation\n"
+            "<code>/report</code> — laporan mingguan trade journal\n\n"
+            "<b>✍️ Trade Journal (manual)</b>\n"
+            "<code>/open SYMBOL ENTRY STOP</code>\n"
+            "  contoh: <code>/open SOLUSDT 142.34 128.10</code>\n"
+            "<code>/close SYMBOL tp1|stop|HARGA</code>\n"
+            "  contoh: <code>/close SOLUSDT tp1</code>\n\n"
+            "<b>🔧 Lainnya</b>\n"
+            "<code>/unblock SYMBOL</code> — lepas news block\n"
+            "<code>/help</code> — tampilkan pesan ini"
+        )
+
     else:
         send_fn(
-            "❓ <b>Command yang tersedia:</b>\n"
-            "<code>/open SYMBOL ENTRY STOP</code>\n"
-            "<code>/close SYMBOL tp1|stop|HARGA</code>\n"
-            "<code>/status</code>\n"
-            "<code>/report</code>"
+            "❓ Command tidak dikenal. Ketik <code>/help</code> untuk daftar command."
         )
 
 
@@ -213,6 +229,13 @@ async def cmd_unblock(symbol: str, db, send_fn) -> None:
         f"Sinyal kembali aktif."
     )
     logger.info(f"Manual unblock: {symbol}")
+
+
+async def cmd_paper_report(db, send_fn) -> None:
+    """Handle /paper — kirim Bot Trading History Simulation."""
+    from utils.telegram import send_paper_report
+    history = db.get_paper_sim_history(days=60)
+    send_paper_report(history)
 
 
 async def cmd_report(db, send_fn) -> None:
