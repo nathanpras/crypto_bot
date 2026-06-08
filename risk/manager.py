@@ -148,133 +148,94 @@ def check_portfolio_guards(new_symbol: str) -> dict:
 
 
 def format_trade_for_telegram(calc: dict, signal: dict) -> str:
-    """Format trade signal untuk Telegram dalam bahasa Indonesia yang mudah dibaca."""
+    """Format trade signal — compact, plain Indonesian."""
     from config import SECTOR_MAP, SIGNAL_THRESHOLD
 
     idr_rate = float(os.getenv("IDR_RATE", 17_800))
-    risk_idr = calc["risk_usd"] * idr_rate
-    pos_idr  = calc["position_usd"] * idr_rate
     symbol   = calc["symbol"]
     sym      = symbol.replace("USDT", "")
+    is_paper = os.getenv("PAPER_TRADING", "true").lower() == "true"
+    regime   = signal.get("regime", "")
+    score    = signal.get("total_score", 0)
+    signals  = signal.get("signals", {})
 
-    is_paper  = os.getenv("PAPER_TRADING", "true").lower() == "true"
-    is_strong = signal.get("strong", False)
-    regime    = signal.get("regime", "")
-    score     = signal.get("total_score", 0)
-    signals   = signal.get("signals", {})
-
-    # Title
-    if is_strong:
-        title = f"🌪 <b>PERFECT STORM — {sym}!</b>"
-    else:
-        title = f"🔔 <b>Signal Masuk — {sym}</b>"
-    if is_paper:
-        title += "\n<i>(Paper trade — simulasi, bukan uang sungguhan)</i>"
-
-    # Plain regime description
-    regime_plain = {
-        "TRENDING_BULL":  "Tren lagi naik",
-        "TRENDING_BEAR":  "Tren lagi turun ⚠️",
-        "RANGING":        "Harga sideways",
-        "VOLATILE":       "Harga lagi liar/volatil",
-        "TRANSITIONING":  "Masa transisi",
-    }.get(regime, regime)
-
-    # Entry/exit plan
-    entry = calc["entry_price"]
-    stop  = calc["stop_price"]
-    tp1   = calc["tp1_price"]
-    tp2   = calc["tp2_price"]
-    stop_pct = (1 - stop / entry) * 100
-    tp1_pct  = (tp1 / entry - 1) * 100
-    tp2_pct  = (tp2 / entry - 1) * 100
+    entry    = calc["entry_price"]
+    stop     = calc["stop_price"]
+    tp1      = calc["tp1_price"]
+    tp2      = calc["tp2_price"]
+    max_buy  = entry * 1.02   # jangan beli kalau harga sudah naik > 2% dari entry
+    pos_idr  = calc["position_usd"] * idr_rate
+    risk_idr = calc["risk_usd"] * idr_rate
 
     pf = lambda p: f"${p:,.4f}" if p < 10 else (f"${p:,.3f}" if p < 100 else f"${p:,.2f}")
 
-    # Signal strengths and weaknesses in plain language
-    sig_good, sig_bad = [], []
-    checks = [
-        ("trend_score",     "Tren naik kuat",          "Tren masih turun/lemah",    65, 45),
-        ("rsi_score",       "RSI oversold (potensi bounce)", "Momentum lemah",       65, 45),
-        ("volume_score",    "Volume besar mengkonfirmasi",   "Volume masih sepi",    65, 45),
-        ("wyckoff_score",   "Pola akumulasi terbentuk", "Belum ada pola akumulasi",  65, 45),
-        ("onchain_score",   "Pemain besar masuk (onchain)",  "Onchain lemah",        65, 45),
-        ("macd_score",      "Momentum MACD kuat",       "MACD flat/bearish",         70, 40),
-        ("sentiment_score", "Pasar oversold/takut",     "Sentiment negatif",         65, 45),
-    ]
-    for key, good_label, bad_label, good_thresh, bad_thresh in checks:
-        v = signals.get(key, 0)
-        if v >= good_thresh:
-            sig_good.append(f"✅ {good_label} ({v:.0f})")
-        elif v < bad_thresh:
-            sig_bad.append(f"⚠️ {bad_label} ({v:.0f})")
+    # Title + label
+    icon  = "🌪" if signal.get("strong") else "🔔"
+    label = "PAPER" if is_paper else "LIVE"
+    regime_short = {
+        "TRENDING_BULL": "Tren naik 📈", "TRENDING_BEAR": "Tren turun 📉",
+        "RANGING": "Sideways ↔️", "VOLATILE": "Volatil ⚡", "TRANSITIONING": "Transisi",
+    }.get(regime, regime)
 
-    # Warnings
-    warnings = []
-    if regime == "TRENDING_BEAR":
-        warnings.append("⚠️ Tren DOT sedang turun — signal ini melawan tren, risiko lebih tinggi")
-    if signals.get("trend_score", 50) < 40:
-        warnings.append("⚠️ Indikator tren sangat lemah (24/100) — pertimbangkan skip")
-    if score < SIGNAL_THRESHOLD + 5:
-        warnings.append(f"⚠️ Skor pas di batas ({score:.0f}/100) — signal marginal")
-    unlock_pen = signal.get("unlock_penalty", 0)
-    if unlock_pen >= 5:
-        warnings.append(f"⚠️ Ada token unlock besar (−{unlock_pen:.0f} poin)")
+    # Verdikt singkat: kenapa masuk + apa risikonya (max 2 baris)
+    positives, negatives = [], []
+    if signals.get("macd_score", 0)      >= 70: positives.append("MACD kuat")
+    if signals.get("trend_score", 0)     >= 65: positives.append("tren bagus")
+    if signals.get("rsi_score", 0)       >= 65: positives.append("RSI oversold")
+    if signals.get("onchain_score", 0)   >= 70: positives.append("smart money masuk")
+    if signals.get("volume_score", 0)    >= 65: positives.append("volume besar")
+    if signals.get("wyckoff_score", 0)   >= 65: positives.append("pola akumulasi")
+    if signals.get("sentiment_score", 0) >= 65: positives.append("pasar oversold")
 
-    # Futures context
-    db    = get_db()
-    fm_df = db.get_futures_metrics(symbol)
-    ctx_lines = []
+    if regime == "TRENDING_BEAR":          negatives.append("tren masih turun")
+    if signals.get("trend_score", 50)  < 40: negatives.append("tren lemah")
+    if signals.get("volume_score", 50) < 45: negatives.append("volume sepi")
+    if signals.get("wyckoff_score", 50)< 40: negatives.append("belum ada akumulasi")
+    if score < SIGNAL_THRESHOLD + 5:       negatives.append("skor pas di batas")
+    if signal.get("unlock_penalty", 0) >= 5:
+        negatives.append(f"token unlock -{signal['unlock_penalty']:.0f}pts")
+
+    # Futures context (1 baris kalau ada)
+    db      = get_db()
+    fm_df   = db.get_futures_metrics(symbol)
+    ctx     = ""
     if not fm_df.empty:
-        fm     = fm_df.iloc[0]
-        oi_chg = float(fm.get("oi_change_24h_pct") or 0)
-        fund   = float(fm.get("funding_rate") or 0)
-        if abs(oi_chg) >= 1:
-            ctx_lines.append(
-                f"Open interest naik {oi_chg:+.1f}% (banyak posisi baru terbuka)" if oi_chg > 0
-                else f"Open interest turun {oi_chg:.1f}% (banyak posisi ditutup)"
-            )
-        if fund < -0.01:
-            ctx_lines.append("Funding negatif 🟢 — shorts bayar longs (bagus untuk long)")
-        elif fund > 0.03:
-            ctx_lines.append(f"Funding tinggi 🔴 ({fund:+.4f}) — banyak longs, hati-hati")
+        fm   = fm_df.iloc[0]
+        fund = float(fm.get("funding_rate") or 0)
+        if fund < -0.01:   ctx = "Funding negatif 🟢 (shorts bayar longs, bagus)"
+        elif fund > 0.03:  ctx = f"Funding tinggi 🔴 ({fund:+.4f}) — banyak longs, hati-hati"
 
-    chain   = SECTOR_MAP.get(symbol, "")
-    tvl_row = db.get_sector_tvl(chain) if chain else {}
-    tvl_30d = float(tvl_row.get("tvl_change_30d") or 0)
-    if tvl_30d > 5:
-        ctx_lines.append(f"TVL ekosistem naik {tvl_30d:+.1f}% (30 hari) — fundamental bagus 🟢")
-    elif tvl_30d < -5:
-        ctx_lines.append(f"TVL ekosistem turun {tvl_30d:.1f}% (30 hari) 🔴")
+    pos_usd    = calc["position_usd"]
+    tp1_profit = pos_usd * 0.5 * (tp1 / entry - 1) * idr_rate   # 50% posisi di TP1
+    tp2_profit = pos_usd * 0.5 * (tp2 / entry - 1) * idr_rate   # 50% sisanya di TP2
+    total_profit = tp1_profit + tp2_profit
 
-    # Build message
     lines = [
-        title,
-        f"Kondisi: <b>{regime_plain}</b>  |  Skor: <b>{score:.0f}/100</b>",
+        f"{icon} <b>Signal {sym}</b>  <code>{score:.0f}/100</code>  [{label}]",
+        f"{regime_short}",
         "",
-        "──────────────────────────",
-        "💰 <b>Rencana Posisi</b>",
-        f"Beli di   : <b>{pf(entry)}</b>",
-        f"Cut loss  : {pf(stop)} (kalau turun {stop_pct:.1f}%, langsung keluar)",
-        f"Target 1  : {pf(tp1)} (ambil 50% profit di +{tp1_pct:.1f}%)",
-        f"Target 2  : {pf(tp2)} (sisanya trailing stop di +{tp2_pct:.1f}%)",
+        "📌 <b>Harga</b>",
+        f"Beli di          : <b>{pf(entry)}</b>",
+        f"Maksimal beli di : {pf(max_buy)}  <i>(lewat ini, skip)</i>",
+        f"Cut loss         : {pf(stop)}  <i>(-{(1-stop/entry)*100:.1f}%)</i>",
+        f"Target 1         : {pf(tp1)}  <i>(+{(tp1/entry-1)*100:.1f}%)</i>",
+        f"Target 2         : {pf(tp2)}  <i>(+{(tp2/entry-1)*100:.1f}%)</i>",
         "",
-        f"Modal     : <b>Rp {pos_idr:,.0f}</b> (${calc['position_usd']:.2f})",
-        f"Maks rugi : Rp {risk_idr:,.0f} (${calc['risk_usd']:.2f}) — {calc['risk_pct']:.1f}% portfolio",
+        "💵 <b>Uang</b>",
+        f"Modal      : <b>Rp {pos_idr:,.0f}</b>",
+        f"Maks rugi  : <b>Rp {risk_idr:,.0f}</b>",
+        f"Untung TP1 : <b>Rp {tp1_profit:,.0f}</b>  <i>(jual 50% posisi)</i>",
+        f"Untung TP2 : <b>Rp {tp2_profit:,.0f}</b>  <i>(jual sisanya)</i>",
+        f"Total jika hit semua : <b>Rp {total_profit:,.0f}</b>",
     ]
 
-    if warnings:
-        lines += ["", "──────────────────────────"]
-        lines += warnings
-
-    if sig_good or sig_bad:
-        lines += ["", "──────────────────────────", "📊 <b>Kenapa signal ini masuk?</b>"]
-        lines += sig_good[:3]
-        lines += sig_bad[:2]
-
-    if ctx_lines:
-        lines += ["", "──────────────────────────", "📋 <b>Info Tambahan</b>"]
-        lines += [f"• {c}" for c in ctx_lines]
+    # Kenapa masuk
+    if positives:
+        lines += ["", f"✅ {', '.join(positives[:3])}"]
+    if negatives:
+        lines += [f"⚠️ {', '.join(negatives[:3])}"]
+    if ctx:
+        lines += [f"ℹ️ {ctx}"]
 
     return "\n".join(lines)
 
