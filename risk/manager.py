@@ -198,10 +198,23 @@ def format_trade_for_telegram(calc: dict, signal: dict) -> str:
         if fund < -0.01:   ctx = "Funding negatif 🟢 (shorts bayar longs, bagus)"
         elif fund > 0.03:  ctx = f"Funding tinggi 🔴 ({fund:+.4f}) — banyak longs, hati-hati"
 
-    pos_usd    = calc["position_usd"]
-    tp1_profit = pos_usd * 0.5 * (tp1 / entry - 1) * idr_rate   # 50% posisi di TP1
-    tp2_profit = pos_usd * 0.5 * (tp2 / entry - 1) * idr_rate   # 50% sisanya di TP2
+    pos_usd      = calc["position_usd"]
+    tp1_profit   = pos_usd * 0.5 * (tp1 / entry - 1) * idr_rate
+    tp2_profit   = pos_usd * 0.5 * (tp2 / entry - 1) * idr_rate
     total_profit = tp1_profit + tp2_profit
+
+    # Round to nearest Rp 1.000 to avoid floating-point display noise
+    rp = lambda v: f"Rp {round(v / 1000) * 1000:,.0f}"
+
+    # Hold duration estimate based on regime
+    hold_map = {
+        "TRENDING_BULL": ("1–2 minggu", "3–6 minggu", "6 minggu"),
+        "TRENDING_BEAR": ("1–2 minggu", "3–4 minggu", "4 minggu"),
+        "RANGING":       ("1–3 minggu", "4–8 minggu", "8 minggu"),
+        "VOLATILE":      ("3–7 hari",   "2–4 minggu", "4 minggu"),
+        "TRANSITIONING": ("1–3 minggu", "3–6 minggu", "6 minggu"),
+    }
+    h_tp1, h_tp2, h_max = hold_map.get(regime, ("1–3 minggu", "3–6 minggu", "6 minggu"))
 
     lines = [
         f"{icon} <b>Signal {sym}</b>  <code>{score:.0f}/100</code>  [{label}]",
@@ -215,11 +228,16 @@ def format_trade_for_telegram(calc: dict, signal: dict) -> str:
         f"Target 2         : {pf(tp2)}  <i>(+{(tp2/entry-1)*100:.1f}%)</i>",
         "",
         "💵 <b>Uang</b>",
-        f"Modal      : <b>Rp {pos_idr:,.0f}</b>",
-        f"Maks rugi  : <b>Rp {risk_idr:,.0f}</b>",
-        f"Untung TP1 : <b>Rp {tp1_profit:,.0f}</b>  <i>(jual 50% posisi)</i>",
-        f"Untung TP2 : <b>Rp {tp2_profit:,.0f}</b>  <i>(jual sisanya)</i>",
-        f"Total jika hit semua : <b>Rp {total_profit:,.0f}</b>",
+        f"Modal      : <b>{rp(pos_idr)}</b>",
+        f"Maks rugi  : <b>{rp(risk_idr)}</b>",
+        f"Untung TP1 : <b>{rp(tp1_profit)}</b>  <i>(jual 50% posisi)</i>",
+        f"Untung TP2 : <b>{rp(tp2_profit)}</b>  <i>(jual sisanya)</i>",
+        f"Total maks : <b>{rp(total_profit)}</b>",
+        "",
+        "⏱ <b>Estimasi Hold</b>",
+        f"Target 1  : sekitar {h_tp1}",
+        f"Target 2  : sekitar {h_tp2}",
+        f"Maks hold : {h_max} — kalau belum hit TP1, pertimbangkan keluar",
     ]
 
     # Kenapa masuk
