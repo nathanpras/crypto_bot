@@ -43,7 +43,7 @@ from collector.historical import fetch_all_historical
 from collector.macro import fetch_all_macro
 from signals.engine import scan_all_coins
 from risk.manager import calc_position_size, check_portfolio_guards, format_trade_for_telegram, get_portfolio_usd
-from utils.telegram import send_signal_alert, send_system_status, send_daily_report
+from utils.telegram import send_signal_alert, send_system_status, send_daily_report, send_scan_summary
 from config import COINS, SIGNAL_THRESHOLD
 from collector.onchain_enhanced import collect_all_onchain
 from collector.narrative import collect_all_tvl
@@ -67,6 +67,7 @@ def run_scan_once():
 
     if not f1["passed"]:
         logger.warning("F1 GATE FAILED — No trades allowed. Holding stablecoin.")
+        send_system_status("warning", f"F1 Gate GAGAL — {f1['reason']}\nSemua trading dihold, pegang stablecoin.")
         return
 
     # Phase 7D: fetch extended macro data once before scan loop
@@ -133,6 +134,10 @@ def run_scan_once():
               f"at {results[0]['total_score']:.1f}/100")
 
     print("═"*55 + "\n")
+
+    # Always send a scan summary to Telegram
+    send_scan_summary(results, macro["macro"], f1, f2)
+    logger.info("Scan summary sent to Telegram")
 
 
 # ── Live mode ─────────────────────────────────────────────────

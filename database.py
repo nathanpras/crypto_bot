@@ -517,7 +517,7 @@ class Database:
         ).df()
 
     def get_trade_stats(self, days: int = 30) -> dict:
-        result = self.conn.execute("""
+        result = self.conn.execute(f"""
             SELECT
                 COUNT(*) as total_trades,
                 SUM(CASE WHEN pnl_usd > 0 THEN 1 ELSE 0 END) as wins,
@@ -528,8 +528,8 @@ class Database:
                 MIN(pnl_usd) as worst_trade
             FROM trades
             WHERE status = 'closed'
-            AND opened_at >= now() - INTERVAL ? DAY
-        """, [days]).df()
+            AND opened_at >= now() - INTERVAL '{int(days)} days'
+        """).df()
         row = result.iloc[0]
         win_rate = row["wins"] / row["total_trades"] if row["total_trades"] > 0 else 0
         return {
