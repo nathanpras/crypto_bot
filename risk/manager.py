@@ -17,10 +17,9 @@ load_dotenv()
 
 
 def get_portfolio_usd() -> float:
-    """Get current tradeable portfolio value in USD."""
-    idr_total = float(os.getenv("PORTFOLIO_IDR", 10_000_000))
-    idr_rate  = float(os.getenv("IDR_RATE", 17_800))
-    return idr_total / idr_rate
+    """Get current tradeable portfolio value in USD. Fixed at Rp 1,000,000."""
+    idr_rate = float(os.getenv("IDR_RATE", 17_800))
+    return 1_000_000 / idr_rate
 
 
 def calc_position_size(symbol: str, entry_price: float,
