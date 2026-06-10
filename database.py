@@ -1266,5 +1266,14 @@ _db = None
 def get_db() -> Database:
     global _db
     if _db is None:
-        _db = Database()
+        import time
+        for attempt in range(15):
+            try:
+                _db = Database()
+                break
+            except Exception as e:
+                if "lock" in str(e).lower() and attempt < 14:
+                    time.sleep(2)
+                else:
+                    raise
     return _db
